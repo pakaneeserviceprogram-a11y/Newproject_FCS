@@ -1,0 +1,45 @@
+การเลือกโปรโมชั่น (Promotion Selection Logic) ขึ้นอยู่กับนโยบายทางการตลาดของศูนย์อาหารครับ ว่าจะใจดีแค่ไหน ผมขอยกตัวอย่าง Logic ยอดนิยม 3 แบบ พร้อมตัวอย่าง Query เพื่อให้เห็นภาพการนำไปใช้งานจริงครับสมมติว่าในตาราง Promo_Cashier_Campaigns มีข้อมูลดังนี้:CampaignIDNameMinTopUpRewardRewardValueหมายเหตุ1เติม 100 ได้ 5 แต้ม100POINT5โปรพื้นฐาน2เติม 500 ได้ 50 แต้ม500POINT50โปรขายดี3เติม 1,000 แถมเงิน 1001,000CASH_BONUS100โปรป๋า (คืนไม่ได้)ลูกค้า นาย A เดินมาเติมเงิน 1,000 บาท (ซึ่งตามหลักแล้ว เขาเข้าเกณฑ์ทั้ง 3 โปร)แบบที่ 1: Best Offer (เลือกสิ่งที่ดีที่สุดให้ลูกค้าเพียง 1 อย่าง) [นิยมที่สุด]แนวคิด: ระบบจะเลือกโปรโมชั่นที่ "ยากที่สุด" หรือ "มูลค่าสูงที่สุด" ที่ลูกค้าทำถึงเกณฑ์ เพื่อไม่ให้บริษัทขาดทุนกำไรและลูกค้าไม่สับสนผลลัพธ์: นาย A ได้รับ แถมเงิน 100 บาท (แคมเปญ ID 3) เพียงอย่างเดียว (ไม่ได้รับแต้ม)Logic SQL: เรียงลำดับตามยอดเติมเงินขั้นต่ำ (MinTopUpAmount) จากมากไปน้อย แล้วเลือกตัวบนสุด (TOP 1)SQL/* ตัวอย่าง Logic ใน Store Procedure */
+DECLARE @TopUpAmount DECIMAL(12,2) = 1000.00;
+DECLARE @CurrentTime DATETIME = GETDATE();
+
+SELECT TOP 1 
+    CampaignID,
+    CampaignName,
+    RewardType,
+    RewardValue
+FROM Promo_Cashier_Campaigns
+WHERE IsActive = 1 
+  AND @CurrentTime BETWEEN StartDate AND EndDate
+  AND @TopUpAmount >= MinTopUpAmount -- ยอดเติมถึงเกณฑ์
+ORDER BY 
+    MinTopUpAmount DESC; -- *สำคัญ* เรียงจากเกณฑ์สูงสุดก่อน
+แบบที่ 2: Stackable / On-Top (ได้หลายต่อ)แนวคิด: ใจป้ำแจกแหลก ลูกค้าได้รับทุกโปรโมชั่นที่เข้าเงื่อนไข มักใช้ในช่วงเปิดศูนย์อาหารใหม่เพื่อดึงดูดคนผลลัพธ์: นาย A ได้รับ แต้ม 5 + แต้ม 50 + เงิน 100 รวมกันทั้งหมดLogic SQL: ไม่ใช้ TOP 1 แต่เลือกทั้งหมด (SELECT *) แล้ววนลูป Insert ลง Transaction LogSQL/* ตัวอย่าง Logic ใน Store Procedure */
+DECLARE @TopUpAmount DECIMAL(12,2) = 1000.00;
+
+-- ใช้ Cursor หรือ INSERT ... SELECT เพื่อบันทึกทุกรางวัล
+INSERT INTO Promo_Redemption_Log (TxnID, CampaignID, RewardType, RewardAmount)
+SELECT 
+    @TxnID, 
+    CampaignID, 
+    RewardType, 
+    RewardValue
+FROM Promo_Cashier_Campaigns
+WHERE IsActive = 1 
+  AND GETDATE() BETWEEN StartDate AND EndDate
+  AND @TopUpAmount >= MinTopUpAmount; -- เลือกทั้งหมดที่ผ่านเกณฑ์
+
+-- จากนั้นต้องเขียน Update Cards ให้บวกยอดรวมทั้งหมดเข้าไป
+แบบที่ 3: Exclusive Tier (แบ่งตามกลุ่มลูกค้า)แนวคิด: โปรโมชั่นเดียวกัน แต่ให้รางวัลต่างกันตามกลุ่มบัตร (Card_Groups) เช่น พนักงานได้เยอะกว่าคนนอกข้อมูลสมมติ: เพิ่มโปรฯ ID 4: "VIP เติม 1,000 แถม 200"ผลลัพธ์:ถ้านาย A เป็น VISITOR: ได้โปร ID 3 (แถม 100)ถ้านาย A เป็น VIP: ได้โปร ID 4 (แถม 200)Logic SQL: เพิ่มเงื่อนไข CustomerType หรือ CardGroupID เข้าไปในการเลือกSQLDECLARE @TopUpAmount DECIMAL(12,2) = 1000.00;
+DECLARE @UserCardGroup NVARCHAR(20) = 'VIP'; -- รับค่าจากบัตรที่แปะ
+
+SELECT TOP 1 *
+FROM Promo_Cashier_Campaigns
+WHERE IsActive = 1 
+  AND @TopUpAmount >= MinTopUpAmount
+  -- เช็คว่าโปรนี้สำหรับ "ทุกคน" หรือ "เฉพาะกลุ่มนี้"
+  AND (CustomerType = 'ALL' OR CustomerType = @UserCardGroup) 
+ORDER BY 
+    -- ให้ Priority กับโปรเฉพาะกลุ่มก่อน (เช่น VIP) แล้วค่อยดูยอดเงิน
+    CASE WHEN CustomerType = @UserCardGroup THEN 1 ELSE 0 END DESC,
+    MinTopUpAmount DESC;
+ข้อแนะนำเพิ่มเติมสำหรับการ "คืนเงิน" (Refund Policy)ในกรณีที่ ได้เงินเพิ่ม (Cash Bonus) สิ่งที่ต้องระวังที่สุดคือการ "เติมปั๊บ ถอนปุ๊บ" เพื่อเอาเงินฟรีในการเขียนโปรแกรม (Backend) คุณต้องแยกกระเป๋าเงินให้ชัดเจนตาม Schema ที่ออกแบบไว้ครับ:เงินต้น (CashBalance): นาย A เติม 1,000 -> เข้าช่องนี้ -> ถอนได้เงินแถม (SubsidyBalance): โปรโมชั่นแถม 100 -> เข้าช่องนี้ -> ห้ามถอนตอนตัดเงินค่าอาหาร (Store Procedure: Sales):ต้องเขียน Logic ให้ตัดเงินจาก SubsidyBalance (เงินฟรี) ก่อนเสมอ เพื่อให้ลูกค้าใช้เงินแถมให้หมดไวๆ ครับ (First-In, First-Out for Subsidy)

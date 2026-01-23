@@ -1,0 +1,111 @@
+ดาต้าเบสและข้อมูลที่ทำ md ทำยังไงให้ออกมาดูง่ายและสามารถให้ทางทีมสามารถอ่านเข้าใจ และนำไปเขียนโปรแกรมได้มาก
+
+การทำเอกสาร (Documentation) ให้ทีมพัฒนา (Developer/QA) เข้าใจง่ายและนำไปเขียนโปรแกรมได้ทันที ไม่ใช่แค่การแปะ SQL Script ครับ แต่คือการ "แปลง Code ให้เป็นภาพ และแปลง Logic ให้เป็นภาษาคน" ครับ
+
+ผมขอแนะนำเทคนิคการจัด Format ไฟล์ .md (Markdown) ให้เป็นมืออาชีพ โดยใช้เครื่องมือที่ Developer ชอบ ดังนี้ครับ:
+
+1. ใช้ Mermaid.js เพื่อวาด ER Diagram ใน Markdown
+แทนที่จะแปะรูปภาพ .jpg ที่แก้ไขยาก ให้ใช้ Mermaid Syntax เขียนลงไปใน MD เลยครับ (GitHub, GitLab, VS Code สามารถ Render เป็นรูปภาพได้ทันที)
+
+ตัวอย่าง Code ในไฟล์ MD:
+
+Markdown
+### แผนภาพความสัมพันธ์ (ER Diagram) - ส่วนงานขาย
+```mermaid
+erDiagram
+    Terminals ||--o{ Txn_Cashier : "issues"
+    Cards ||--o{ Txn_Cashier : "performs"
+    Txn_Cashier ||--|{ Txn_Cashier_Payments : "contains"
+    
+    Txn_Cashier {
+        bigint TxnID PK
+        datetime TxnDate
+        decimal TotalAmount
+    }
+    Txn_Cashier_Payments {
+        bigint PaymentID PK
+        string PaymentTypeID FK
+        decimal Amount
+    }
+(ถ้าคุณใช้ VS Code ให้ลง Extension ชื่อ "Markdown Preview Mermaid Support" จะเห็นเป็นรูปสวยงามครับ)
+
+2. ทำ "Data Dictionary" แบบตาราง
+Developer จะชอบดูตารางมากกว่าอ่าน Comment ใน Code ครับ เพราะมันกวาดสายตาดู Type และ Constraint ได้ง่าย
+
+ตัวอย่างตารางใน MD:
+
+ตาราง: Cards (ข้อมูลบัตร)
+Column Name	Data Type	PK/FK	Nullable	Description	Note/Example
+CardUID	NVARCHAR(50)	PK	No	รหัสชิป RFID	UID จากเครื่องอ่าน
+EmployeeID	NVARCHAR(20)	FK	Yes	รหัสพนักงาน	เชื่อมกับตาราง Employees
+CashBalance	DECIMAL(12,2)	-	No	กระเป๋าเงินเติมเอง	ถอนคืนได้
+SubsidyBalance	DECIMAL(12,2)	-	No	กระเป๋าสวัสดิการ	ถอนไม่ได้ (ตัดก่อนเสมอ)
+Status	NVARCHAR(20)	-	No	สถานะบัตร	'Active', 'Blocked'
+3. เขียน Business Logic Flow (Sequence Diagram)
+สำหรับ Logic ที่ซับซ้อน เช่น "การตัดเงินสวัสดิการแบบ Auto" หรือ "โปรโมชั่นเติมเงิน" ให้เขียนเป็น Sequence Diagram ครับ ทีมจะเข้าใจทันทีว่า Code ต้องเขียนเงื่อนไขอย่างไร
+
+ตัวอย่าง Code ใน MD:
+
+Markdown
+### Logic การตัดเงิน (Payment Flow)
+```mermaid
+sequenceDiagram
+    participant User
+    participant POS
+    participant DB
+    
+    User->>POS: แตะบัตรจ่ายเงิน 100 บาท
+    POS->>DB: ตรวจสอบยอดเงิน (Check Balance)
+    DB-->>POS: Cash=50, Subsidy=60
+    
+    Note right of POS: Logic: ตัด Subsidy ก่อนเสมอ
+    
+    POS->>POS: คำนวณ: ตัด Subsidy 60 (เหลือจ่าย 40)
+    POS->>POS: คำนวณ: ตัด Cash 40
+    
+    POS->>DB: บันทึก Transaction (Save)
+    DB-->>POS: Success
+4. แปลง Database เป็น C# Class (POCO) ล่วงหน้า
+เพื่อช่วยลดงาน Developer คุณสามารถ Generate C# Class แปะไว้ให้เขา copy ไปใช้ได้เลย (หรือใช้เป็นแนวทาง)
+
+ตัวอย่างใน MD:
+
+C#
+// Entity Models for C#
+public class Card {
+    public string CardUID { get; set; }
+    public decimal CashBalance { get; set; }
+    public decimal SubsidyBalance { get; set; }
+    
+    // Computed Property (Helper)
+    public decimal TotalBalance => CashBalance + SubsidyBalance;
+}
+5. จัดโครงสร้างโฟลเดอร์ใน Git
+อย่ารวมทุกอย่างในไฟล์เดียวครับ ให้แยกไฟล์แล้วทำ Table of Contents (สารบัญ) ที่ไฟล์ README.md หลัก
+
+Plaintext
+/Project-Docs
+│
+├── README.md              <-- สารบัญหลัก (Index)
+├── 01-Database-Schema
+│   ├── 01-Master-Data.md  <-- ตาราง Users, Cards, Vendors
+│   ├── 02-Transactions.md <-- ตาราง Sales, Topup
+│   └── 03-Security.md     <-- ตาราง Roles, Permissions
+│
+├── 02-Business-Logic
+│   ├── Auto-Subsidy.md    <-- อธิบาย Logic เติมเงินอัตโนมัติ
+│   └── Promotion-Rules.md <-- อธิบาย Logic โปรโมชั่น
+│
+└── 03-Setup-Scripts
+    ├── 01-Init-DB.sql     <-- Script สร้างตาราง
+    └── 02-Mock-Data.sql   <-- Script ข้อมูลตัวอย่าง
+สรุปสิ่งที่ต้องทำเพื่อให้ทีมรัก ❤️
+เห็นภาพ: ใช้ Mermaid วาด ER Diagram
+
+อ่านง่าย: ใช้ตาราง Data Dictionary
+
+เข้าใจ Flow: ใช้ Sequence Diagram อธิบาย Logic ยากๆ
+
+พร้อมใช้: มี SQL Script + Mock Data แยกไฟล์ไว้ให้รันได้เลย
+
+หากคุณต้องการ ผมสามารถช่วย เขียนไฟล์ Markdown ฉบับสมบูรณ์ (รวม Diagram) สำหรับโปรเจกต์นี้ให้ได้นะครับ จะรับไหมครับ?

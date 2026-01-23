@@ -1,0 +1,322 @@
+ทำ document ให้ด้วย
+
+ได้ครับ ผมได้รวบรวมข้อมูลทั้งหมดที่เราคุยกัน ทั้งโครงสร้าง Database, Logic การทำงาน, ระบบสวัสดิการ, และระบบความปลอดภัย มาจัดทำเป็น เอกสารข้อกำหนดทางเทคนิค (System Specification Document) ฉบับสมบูรณ์ให้แล้วครับ
+
+คุณสามารถ Copy โค้ดด้านล่างนี้ไปบันทึกเป็นไฟล์ FCS_System_Spec.md เพื่อส่งต่อให้ทีม Developer หรือใช้เป็นเอกสารอ้างอิงของโครงการได้เลยครับ
+
+Markdown
+# 📘 FCS Modern Database Specification
+**Project Name:** Modern Food Court System (FCS)  
+**Version:** 2.0 (Full Integrated)  
+**Last Updated:** 2026-01-22  
+**Author:** Pakanee & System Architect
+
+---
+
+## 1. 🏗️ System Architecture & Diagrams
+ภาพรวมความสัมพันธ์ของข้อมูลในระบบ แบ่งตามโมดูลหลัก
+
+### 1.1 Core Business & Transactions (ระบบหลักและการเงิน)
+แสดงความสัมพันธ์ระหว่าง บัตร (Cards) -> การซื้อขาย (Sales) -> และสินค้า (Inventory)
+
+```mermaid
+erDiagram
+    %% Master Data
+    Card_Groups ||--o{ Cards : "defines price tier"
+    Employees ||--o{ Cards : "owns"
+    Vendors ||--o{ Products : "sells"
+    Products ||--o{ Product_Price_Tiers : "has special price"
+    Card_Groups ||--o{ Product_Price_Tiers : "receives special price"
+
+    %% Transaction
+    Cards ||--o{ Txn_Cashier : "topup/refund"
+    Cards ||--o{ Sales_Orders : "purchases"
+    Txn_Cashier ||--|{ Txn_Cashier_Payments : "paid by"
+    Sales_Orders ||--|{ Sales_Order_Items : "contains"
+    
+    %% Promotion & Welfare
+    Subsidy_Rules ||--o{ Txn_Subsidy_Log : "triggers"
+    Cards ||--o{ Txn_Subsidy_Log : "audit trail"
+    Promo_Cashier_Campaigns ||--o{ Promo_Redemption_Log : "rewards"
+1.2 Security & Back Office (ระบบความปลอดภัย)
+แสดงโครงสร้าง User, Role และการกำหนดสิทธิ์เข้าถึงเมนู
+
+Code snippet
+erDiagram
+    App_Users ||--|{ App_User_Roles : "has"
+    App_Roles ||--|{ App_Role_Permissions : "has"
+    App_Permissions ||--|{ App_Role_Permissions : "assigned to"
+    App_Permissions ||--o{ App_Menus : "controls visibility"
+    App_Menus ||--o{ App_Menus : "parent of"
+2. 🗄️ Database Installation Scripts (SQL)
+ลำดับการรัน Script เพื่อสร้างฐานข้อมูล (กรุณารันตามลำดับ Step 1-4)
+
+Step 1: Create Database & Tables (Master & Transaction)
+SQL
+CREATE DATABASE FCS_ModernDB COLLATE Thai_CI_AS;
+GO
+USE FCS_ModernDB;
+GO
+
+/* --- PART 1: MASTER DATA --- */
+CREATE TABLE Terminals (
+    TerminalID NVARCHAR(20) PRIMARY KEY, TerminalName NVARCHAR(100), TerminalType NVARCHAR(20),
+    MachineSerialNo NVARCHAR(50) NOT NULL, POS_Reg_No NVARCHAR(50), LocationCode NVARCHAR(20),
+    IsActive BIT DEFAULT 1, CreatedAt DATETIME DEFAULT GETDATE()
+);
+
+CREATE TABLE Vendors (
+    VendorID NVARCHAR(20) PRIMARY KEY, VendorName NVARCHAR(100) NOT NULL, OwnerName NVARCHAR(100),
+    TaxID NVARCHAR(20), BranchID NVARCHAR(10) DEFAULT '00000', IsVatRegistered BIT DEFAULT 0,
+    GP_Share_Percent DECIMAL(5, 2) DEFAULT 0.00, Rent_Price DECIMAL(12, 2) DEFAULT 0.00, IsActive BIT DEFAULT 1
+);
+
+CREATE TABLE Employees (
+    EmployeeID NVARCHAR(20) PRIMARY KEY, FullName NVARCHAR(150) NOT NULL, Department NVARCHAR(100),
+    Status NVARCHAR(20) DEFAULT 'Active', ExtraData NVARCHAR(MAX), UpdatedAt DATETIME DEFAULT GETDATE()
+);
+
+CREATE TABLE Card_Groups (
+    CardGroupID NVARCHAR(20) PRIMARY KEY, GroupName NVARCHAR(100), IsDefault BIT DEFAULT 0
+);
+
+CREATE TABLE Cards (
+    CardUID NVARCHAR(50) PRIMARY KEY, 
+    EmployeeID NVARCHAR(20) REFERENCES Employees(EmployeeID),
+    CardGroupID NVARCHAR(20) DEFAULT 'VISITOR' REFERENCES Card_Groups(CardGroupID),
+    CashBalance DECIMAL(12, 2) DEFAULT 0.00,       -- เงินเติมเอง (ถอนได้)
+    SubsidyBalance DECIMAL(12, 2) DEFAULT 0.00,    -- เงินสวัสดิการ (ถอนไม่ได้)
+    Status NVARCHAR(20) DEFAULT 'Active', ExpireDate DATE NULL,
+    PointBalance DECIMAL(12, 2) DEFAULT 0.00, PointExpDate DATE
+);
+
+CREATE TABLE Products (
+    ProductID NVARCHAR(20) PRIMARY KEY, VendorID NVARCHAR(20) REFERENCES Vendors(VendorID),
+    ProductName NVARCHAR(150) NOT NULL, BasePrice DECIMAL(12, 2) NOT NULL DEFAULT 0,
+    StockType NVARCHAR(20) DEFAULT 'STOCK', IsActive BIT DEFAULT 1
+);
+
+CREATE TABLE Product_Price_Tiers (
+    TierID BIGINT IDENTITY(1,1) PRIMARY KEY,
+    ProductID NVARCHAR(20) REFERENCES Products(ProductID),
+    CardGroupID NVARCHAR(20) REFERENCES Card_Groups(CardGroupID),
+    SpecialPrice DECIMAL(12, 2) NOT NULL,
+    CONSTRAINT UK_Product_Tier UNIQUE (ProductID, CardGroupID)
+);
+
+CREATE TABLE Ref_Payment_Types (
+    PaymentTypeID NVARCHAR(20) PRIMARY KEY, PaymentName NVARCHAR(50), NeedRefNo BIT DEFAULT 0
+);
+
+/* --- PART 2: TRANSACTIONS --- */
+CREATE TABLE System_Shifts (
+    ShiftID INT IDENTITY(1,1) PRIMARY KEY, ShiftDate DATE DEFAULT CAST(GETDATE() AS DATE),
+    TerminalID NVARCHAR(20) REFERENCES Terminals(TerminalID), OpenedBy NVARCHAR(50),
+    OpenedAt DATETIME DEFAULT GETDATE(), ClosedAt DATETIME NULL, Status NVARCHAR(20) DEFAULT 'Open'
+);
+
+CREATE TABLE Txn_Cashier (
+    TxnID BIGINT IDENTITY(1,1) PRIMARY KEY, TxnDate DATETIME DEFAULT GETDATE(),
+    ShiftID INT REFERENCES System_Shifts(ShiftID), TerminalID NVARCHAR(20) REFERENCES Terminals(TerminalID),
+    MachineSerialNo NVARCHAR(50), POS_Reg_No NVARCHAR(50), IssuerTaxID NVARCHAR(20), TaxInvoiceNo NVARCHAR(50), IsFullTax BIT DEFAULT 0,
+    CardUID NVARCHAR(50) REFERENCES Cards(CardUID), TxnType NVARCHAR(20) NOT NULL,
+    TotalAmount DECIMAL(12, 2) NOT NULL, CashierUserID NVARCHAR(50), Remark NVARCHAR(255)
+);
+
+CREATE TABLE Txn_Cashier_Payments (
+    PaymentID BIGINT IDENTITY(1,1) PRIMARY KEY, TxnID BIGINT REFERENCES Txn_Cashier(TxnID),
+    PaymentTypeID NVARCHAR(20) REFERENCES Ref_Payment_Types(PaymentTypeID),
+    Amount DECIMAL(12, 2) NOT NULL, RefNo NVARCHAR(100), RefData NVARCHAR(MAX)
+);
+
+CREATE TABLE Sales_Orders (
+    OrderID BIGINT IDENTITY(1,1) PRIMARY KEY, OrderNo NVARCHAR(30), OrderDate DATETIME DEFAULT GETDATE(),
+    ShiftID INT REFERENCES System_Shifts(ShiftID), TerminalID NVARCHAR(20) REFERENCES Terminals(TerminalID),
+    MachineSerialNo NVARCHAR(50), VendorID NVARCHAR(20) REFERENCES Vendors(VendorID),
+    IssuerTaxID NVARCHAR(20), TaxInvoiceNo NVARCHAR(50),
+    CardUID NVARCHAR(50) REFERENCES Cards(CardUID), TotalAmount DECIMAL(12, 2) NOT NULL,
+    VatAmount DECIMAL(12, 2) DEFAULT 0, CashUsed DECIMAL(12, 2) DEFAULT 0, SubsidyUsed DECIMAL(12, 2) DEFAULT 0,
+    Status NVARCHAR(20) DEFAULT 'Completed'
+);
+
+CREATE TABLE Sales_Order_Items (
+    ItemID BIGINT IDENTITY(1,1) PRIMARY KEY, OrderID BIGINT REFERENCES Sales_Orders(OrderID),
+    ProductID NVARCHAR(20) REFERENCES Products(ProductID), ProductName_Log NVARCHAR(150),
+    Quantity INT DEFAULT 1, UnitPrice DECIMAL(12, 2), TotalPrice AS (Quantity * UnitPrice) PERSISTED
+);
+Step 2: Create Security & Welfare Tables
+SQL
+/* --- PART 3: SECURITY & BACK OFFICE --- */
+CREATE TABLE App_Permissions (
+    PermissionCode NVARCHAR(50) PRIMARY KEY, Description NVARCHAR(100), Category NVARCHAR(50)
+);
+
+CREATE TABLE App_Roles (
+    RoleID INT IDENTITY(1,1) PRIMARY KEY, RoleName NVARCHAR(50) UNIQUE, Description NVARCHAR(100), IsSystemRole BIT DEFAULT 0
+);
+
+CREATE TABLE App_Role_Permissions (
+    RoleID INT REFERENCES App_Roles(RoleID), PermissionCode NVARCHAR(50) REFERENCES App_Permissions(PermissionCode),
+    PRIMARY KEY (RoleID, PermissionCode)
+);
+
+CREATE TABLE App_Users (
+    UserID INT IDENTITY(1,1) PRIMARY KEY, Username NVARCHAR(50) UNIQUE, IsADUser BIT DEFAULT 0,
+    PasswordHash NVARCHAR(255), RelatedVendorID NVARCHAR(20), IsActive BIT DEFAULT 1
+);
+
+CREATE TABLE App_User_Roles (
+    UserID INT REFERENCES App_Users(UserID), RoleID INT REFERENCES App_Roles(RoleID), PRIMARY KEY (UserID, RoleID)
+);
+
+CREATE TABLE App_Menus (
+    MenuID INT IDENTITY(1,1) PRIMARY KEY, ParentMenuID INT REFERENCES App_Menus(MenuID),
+    MenuName_TH NVARCHAR(100), MenuName_EN NVARCHAR(100), IconClass NVARCHAR(50),
+    RoutePath NVARCHAR(100), SortOrder INT DEFAULT 0,
+    RequiredPermissionCode NVARCHAR(50) REFERENCES App_Permissions(PermissionCode), IsActive BIT DEFAULT 1
+);
+
+/* --- PART 4: WELFARE & PROMOTION --- */
+CREATE TABLE Subsidy_Rules (
+    RuleID INT IDENTITY(1,1) PRIMARY KEY, RuleName NVARCHAR(100) NOT NULL,
+    CardGroupID NVARCHAR(20) REFERENCES Card_Groups(CardGroupID), -- ต้องมี Group ก่อน Insert
+    FrequencyType NVARCHAR(20) DEFAULT 'DAILY', ExecutionDay INT DEFAULT 0,
+    Amount DECIMAL(12, 2) NOT NULL, TopUpMode NVARCHAR(20) DEFAULT 'RESET', -- RESET=ล้างเก่าเติมใหม่, STACK=ทบยอด
+    IsActive BIT DEFAULT 1, LastRunDate DATE NULL
+);
+
+CREATE TABLE Txn_Subsidy_Log (
+    LogID BIGINT IDENTITY(1,1) PRIMARY KEY, TxnDate DATETIME DEFAULT GETDATE(),
+    CardUID NVARCHAR(50) NOT NULL, EmployeeID NVARCHAR(20),
+    Amount DECIMAL(12, 2) NOT NULL, PreviousBalance DECIMAL(12, 2) DEFAULT 0, NewBalance DECIMAL(12, 2) DEFAULT 0,
+    TxnType NVARCHAR(20) NOT NULL, RuleID INT REFERENCES Subsidy_Rules(RuleID),
+    PerformedBy NVARCHAR(50), Remark NVARCHAR(255)
+);
+
+CREATE TABLE Promo_Cashier_Campaigns (
+    CampaignID INT IDENTITY(1,1) PRIMARY KEY, CampaignName NVARCHAR(100), StartDate DATETIME, EndDate DATETIME,
+    MinTopUpAmount DECIMAL(12,2), CustomerType NVARCHAR(20), RewardType NVARCHAR(20), CalculationType NVARCHAR(20),
+    RewardValue DECIMAL(12,2), IsRefundable BIT, ExpireDays INT, IsActive BIT DEFAULT 1, CreatedAt DATETIME
+);
+
+CREATE TABLE Promo_Redemption_Log (
+    LogID BIGINT IDENTITY(1,1) PRIMARY KEY, TxnID BIGINT, CampaignID INT, CardUID NVARCHAR(50),
+    RewardType NVARCHAR(20), RewardAmount DECIMAL(12,2), ExpireDate DATE, RedeemedAt DATETIME
+);
+Step 3: Seed Data (Initial Configuration) ✅
+สำคัญ: ต้องรันส่วนนี้ก่อนใช้งาน เพื่อป้องกัน Error Foreign Key
+
+SQL
+/* 1. สร้างกลุ่มบัตร (จำเป็นสำหรับ Subsidy Rules) */
+INSERT INTO Card_Groups (CardGroupID, GroupName, IsDefault) VALUES 
+('VISITOR', 'บุคคลทั่วไป', 1),
+('STAFF',   'พนักงานประจำ', 0),
+('VIP',     'ผู้บริหาร', 0);
+
+/* 2. สร้าง Roles & Permissions */
+INSERT INTO App_Roles (RoleName, IsSystemRole) VALUES ('SystemAdmin', 1), ('Cashier', 0), ('VendorOwner', 0);
+
+INSERT INTO App_Permissions (PermissionCode, Description, Category) VALUES
+('POS_VIEW', 'เข้าใช้ POS', 'Terminal'),
+('VENDOR_VIEW', 'ดูร้านค้า', 'Vendor'),
+('EMP_VIEW', 'ดูพนักงาน', 'Employee'),
+('CARD_VIEW', 'ดูข้อมูลบัตร', 'Card');
+
+/* 3. สร้างเมนูนำทาง */
+INSERT INTO App_Menus (MenuName_TH, RoutePath, RequiredPermissionCode) VALUES 
+('จัดการร้านค้า', '/vendors', 'VENDOR_VIEW'),
+('จัดการพนักงาน', '/employees', 'EMP_VIEW');
+
+/* 4. สร้าง User Admin */
+INSERT INTO App_Users (Username, IsActive) VALUES ('admin', 1);
+3. ⚙️ Business Logic (Stored Procedures)
+Logic หลักสำหรับการทำงานอัตโนมัติของระบบ
+
+3.1 ระบบเติมเงินสวัสดิการอัตโนมัติ (Auto Subsidy)
+Usage: ตั้ง Schedule ให้รัน SP นี้ทุกเที่ยงคืน (00:01 น.)
+
+SQL
+CREATE PROCEDURE Sp_Subsidy_Process_AutoRules
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @Today DATE = CAST(GETDATE() AS DATE);
+    DECLARE @DayOfMonth INT = DAY(@Today);
+
+    DECLARE @RuleCursor CURSOR;
+    DECLARE @RuleID INT, @CardGroup NVARCHAR(20), @Amt DECIMAL(12,2), @Mode NVARCHAR(20), @RuleName NVARCHAR(100);
+
+    -- ดึงกฎที่ต้องทำงานวันนี้
+    SET @RuleCursor = CURSOR FOR
+    SELECT RuleID, RuleName, CardGroupID, Amount, TopUpMode
+    FROM Subsidy_Rules
+    WHERE IsActive = 1 AND (LastRunDate IS NULL OR LastRunDate < @Today)
+      AND (FrequencyType = 'DAILY' OR (FrequencyType = 'MONTHLY' AND ExecutionDay = @DayOfMonth));
+
+    OPEN @RuleCursor;
+    FETCH NEXT FROM @RuleCursor INTO @RuleID, @RuleName, @CardGroup, @Amt, @Mode;
+
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        BEGIN TRANSACTION
+        BEGIN TRY
+            -- 1. บันทึก Log ก่อนดำเนินการ
+            INSERT INTO Txn_Subsidy_Log (CardUID, EmployeeID, Amount, PreviousBalance, NewBalance, TxnType, RuleID, PerformedBy, Remark)
+            SELECT C.CardUID, C.EmployeeID, @Amt, C.SubsidyBalance,
+                CASE WHEN @Mode = 'RESET' THEN @Amt ELSE C.SubsidyBalance + @Amt END,
+                'AUTO', @RuleID, 'SYSTEM', 'Auto Rule: ' + @RuleName
+            FROM Cards C WHERE C.CardGroupID = @CardGroup AND C.Status = 'Active';
+
+            -- 2. อัปเดตเงินในกระเป๋า Subsidy
+            IF @Mode = 'RESET' -- ล้างยอดเก่า (เช่น ให้วันละ 50)
+                UPDATE Cards SET SubsidyBalance = @Amt WHERE CardGroupID = @CardGroup AND Status = 'Active';
+            ELSE -- ทบยอด (สะสมได้)
+                UPDATE Cards SET SubsidyBalance = SubsidyBalance + @Amt WHERE CardGroupID = @CardGroup AND Status = 'Active';
+
+            -- 3. อัปเดตสถานะกฎ
+            UPDATE Subsidy_Rules SET LastRunDate = @Today WHERE RuleID = @RuleID;
+
+            COMMIT TRANSACTION
+        END TRY
+        BEGIN CATCH
+            ROLLBACK TRANSACTION;
+        END CATCH
+        FETCH NEXT FROM @RuleCursor INTO @RuleID, @RuleName, @CardGroup, @Amt, @Mode;
+    END
+    CLOSE @RuleCursor; DEALLOCATE @RuleCursor;
+END
+GO
+3.2 ระบบโปรโมชั่นเติมเงิน (Cashier Promotion)
+Usage: เรียกใช้เมื่อแคชเชียร์กดเติมเงิน เพื่อคำนวณของแถม
+
+SQL
+CREATE PROCEDURE Sp_Cashier_ApplyPromo
+    @TxnID BIGINT, @TopUpAmount DECIMAL(12,2), @CardUID NVARCHAR(50)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @BonusAmt DECIMAL(12,2) = 0;
+    DECLARE @PointsAmt DECIMAL(12,2) = 0;
+
+    -- เลือกโปรโมชั่นที่ดีที่สุด
+    SELECT TOP 1 
+        @BonusAmt = CASE WHEN RewardType = 'CASH_BONUS' THEN RewardValue ELSE 0 END,
+        @PointsAmt = CASE WHEN RewardType = 'POINT' THEN RewardValue ELSE 0 END
+    FROM Promo_Cashier_Campaigns
+    WHERE IsActive = 1 AND GETDATE() BETWEEN StartDate AND EndDate AND @TopUpAmount >= MinTopUpAmount
+    ORDER BY MinTopUpAmount DESC;
+
+    -- ให้รางวัล (ถ้ามี)
+    IF @BonusAmt > 0
+    BEGIN
+        UPDATE Cards SET SubsidyBalance = SubsidyBalance + @BonusAmt WHERE CardUID = @CardUID; -- เข้า Subsidy (ถอนไม่ได้)
+        INSERT INTO Promo_Redemption_Log (TxnID, CardUID, RewardType, RewardAmount) VALUES (@TxnID, @CardUID, 'CASH_BONUS', @BonusAmt);
+    END
+
+    IF @PointsAmt > 0
+    BEGIN
+        UPDATE Cards SET PointBalance = PointBalance + @PointsAmt WHERE CardUID = @CardUID;
+        INSERT INTO Promo_Redemption_Log (TxnID, CardUID, RewardType, RewardAmount) VALUES (@TxnID, @CardUID, 'POINT', @PointsAmt);
+    END
+END
+GO

@@ -1,0 +1,247 @@
+สำหรับการจัดการ Menu (เมนูนำทาง) ในระบบ Back Office เพื่อให้สัมพันธ์กับสิทธิ์การใช้งาน (Permissions) ที่เราออกแบบไว้ ผมแนะนำให้เพิ่มตารางใหม่ชื่อ App_Menus ครับ
+
+ตารางนี้จะทำหน้าที่ผูก "หน้าจอที่เห็น" (UI) เข้ากับ "สิทธิ์ที่มี" (Security) ครับ
+
+นี่คือแนวทางออกแบบและ SQL Script สำหรับนำไปใช้งานครับ
+
+1. ออกแบบตารางเก็บเมนู (Menu Structure)
+เราต้องสร้างตารางเพื่อบอกว่าเมนูไหนอยู่ภายใต้เมนูไหน (Parent/Child) และเมนูนั้นต้องใช้สิทธิ์อะไรถึงจะมองเห็นครับ
+
+SQL
+/* [App_Menus] - โครงสร้างเมนู Back Office */
+CREATE TABLE App_Menus (
+    MenuID          INT IDENTITY(1,1) PRIMARY KEY,
+    ParentMenuID    INT NULL,                          -- ถ้าเป็น NULL คือเมนูหลัก, ถ้ามีค่าคือ Sub-menu
+    MenuName_TH     NVARCHAR(100) NOT NULL,            -- ชื่อเมนูไทย
+    MenuName_EN     NVARCHAR(100),                     -- ชื่อเมนูอังกฤษ
+    IconClass       NVARCHAR(50),                      -- ชื่อ Icon (เช่น 'fa-user', 'mdi-store')
+    RoutePath       NVARCHAR(100),                     -- URL Path สำหรับ Frontend (เช่น '/vendors', '/cards')
+    SortOrder       INT DEFAULT 0,                     -- ลำดับการแสดงผล
+    
+    -- Security Link
+    RequiredPermissionCode NVARCHAR(50) REFERENCES App_Permissions(PermissionCode), -- ต้องมีสิทธิ์นี้ถึงจะเห็นเมนู
+    
+    IsActive        BIT DEFAULT 1
+);
+
+/* สร้าง Self-Reference FK สำหรับทำเมนูย่อย */
+ALTER TABLE App_Menus 
+ADD CONSTRAINT FK_ParentMenu FOREIGN KEY (ParentMenuID) REFERENCES App_Menus(MenuID);
+2. วิธีกำหนดสิทธิ์ (CRUD) ให้กับแต่ละโมดูล
+เพื่อให้ควบคุมการ เพิ่ม (Create), อัปเดต (Update), ลบ (Delete) ได้อย่างละเอียด เราจะไม่ออกแบบสิทธิ์แค่ "เข้าเมนูได้" แต่เราจะแตกสิทธิ์เป็นราย Action ครับ
+
+แนวคิด Naming Convention: MODULE_ACTION
+
+_VIEW: มองเห็นเมนู / ดูข้อมูลได้ (Read)
+
+_ADD: กดปุ่มเพิ่มได้ (Create)
+
+_EDIT: กดปุ่มแก้ไขได้ (Update)
+
+_DELETE: กดปุ่มลบได้ (Delete)
+
+ตัวอย่าง SQL: การเพิ่มโมดูล "ข้อมูลร้านค้า (Vendors)"
+ขั้นตอนที่ 1: สร้างสิทธิ์ (Permissions) ลงใน Database
+
+SQL
+-- 1. สร้างสิทธิ์ CRUD สำหรับร้านค้า
+INSERT INTO App_Permissions (PermissionCode, Description, Category) VALUES 
+('VENDOR_VIEW',   'ดูข้อมูลร้านค้า',    'VendorModule'),
+('VENDOR_ADD',    'เพิ่มร้านค้าใหม่',    'VendorModule'),
+('VENDOR_EDIT',   'แก้ไขข้อมูลร้านค้า',  'VendorModule'),
+('VENDOR_DELETE', 'ลบ/ระงับร้านค้า',    'VendorModule');
+
+-- 2. สร้างสิทธิ์ CRUD สำหรับพนักงาน
+INSERT INTO App_Permissions (PermissionCode, Description, Category) VALUES 
+('EMP_VIEW',   'ดูข้อมูลพนักงาน', 'EmployeeModule'),
+('EMP_ADD',    'เพิ่มพนักงาน',    'EmployeeModule'),
+('EMP_EDIT',   'แก้ไขพนักงาน',    'EmployeeModule'),
+('EMP_DELETE', 'ลบพนักงาน',      'EmployeeModule');
+
+-- ทำแบบเดียวกันกับ Card, Cashier, Promotion...
+ขั้นตอนที่ 2: สร้างเมนูและผูกกับสิทธิ์ _VIEW
+
+SQL
+-- สร้างเมนูหลัก "จัดการข้อมูลหลัก (Master Data)"
+INSERT INTO App_Menus (MenuName_TH, RoutePath, SortOrder, RequiredPermissionCode)
+VALUES ('จัดการข้อมูลหลัก', '/master', 1, NULL); -- เมนูนี้อาจไม่ต้องเช็คสิทธิ์ หรือใช้สิทธิ์กลางๆ
+
+DECLARE @ParentID INT = SCOPE_IDENTITY();
+
+-- สร้างเมนูย่อย "ข้อมูลร้านค้า" (ต้องมีสิทธิ์ VENDOR_VIEW ถึงจะเห็น)
+INSERT INTO App_Menus (ParentMenuID, MenuName_TH, RoutePath, SortOrder, RequiredPermissionCode)
+VALUES (@ParentID, 'ข้อมูลร้านค้า', '/vendors', 1, 'VENDOR_VIEW');
+
+-- สร้างเมนูย่อย "ข้อมูลพนักงาน" (ต้องมีสิทธิ์ EMP_VIEW ถึงจะเห็น)
+INSERT INTO App_Menus (ParentMenuID, MenuName_TH, RoutePath, SortOrder, RequiredPermissionCode)
+VALUES (@ParentID, 'ข้อมูลพนักงาน', '/employees', 2, 'EMP_VIEW');
+3. การนำไปใช้งานจริง (Frontend/API Logic)
+เมื่อ Frontend (React/Vue/Angular) เรียก API Login เข้ามา ระบบจะทำงานดังนี้ครับ:
+
+A. การแสดงผลเมนู (Menu Visibility)
+API จะส่งรายการเมนู (Menu List) กลับไปให้ Frontend โดย Filter เฉพาะเมนูที่ User คนนั้นมีสิทธิ์ RequiredPermissionCode
+
+นาย A มีสิทธิ์แค่ VENDOR_VIEW -> จะเห็นแค่เมนู "ร้านค้า" ไม่เห็นเมนู "พนักงาน"
+
+B. การควบคุมปุ่ม (Button Control)
+ในหน้าจอ "ข้อมูลร้านค้า" Frontend จะเช็คสิทธิ์ย่อยเพื่อแสดงปุ่ม:
+
+ปุ่ม "เพิ่มร้านค้า": เช็คว่า User มี VENDOR_ADD หรือไม่? (ถ้าไม่มี -> ซ่อนปุ่ม หรือ Disable)
+
+ปุ่ม "บันทึกแก้ไข": เช็ค VENDOR_EDIT
+
+ปุ่ม "ลบ": เช็ค VENDOR_DELETE
+
+4. ตัวอย่างหน้าจอตั้งค่าสิทธิ์ (Role Management UI)
+ในหน้า Back Office ส่วนของ "กำหนดสิทธิ์ผู้ใช้งาน" คุณควรทำหน้าจอเป็นตาราง Matrix (Role-Permission Matrix) ดังนี้ครับ:
+
+Permission Name	Admin (Role)	Manager (Role)	Staff (Role)
+ร้านค้า (Vendor)			
+- ดูข้อมูล (VENDOR_VIEW)	✅	✅	✅
+- เพิ่มข้อมูล (VENDOR_ADD)	✅	✅	❌
+- แก้ไขข้อมูล (VENDOR_EDIT)	✅	✅	❌
+- ลบข้อมูล (VENDOR_DELETE)	✅	❌	❌
+บัตร (Card)			
+- ดูข้อมูล (CARD_VIEW)	✅	✅	✅
+...	...	...	...
+เวลาบันทึก (Save): ระบบจะยิง SQL ไป Update ตาราง App_Role_Permissions ตามที่ติ๊กเลือกครับ
+
+SQL
+/* ตัวอย่างการให้สิทธิ์ Admin ทำได้ทุกอย่างในร้านค้า */
+INSERT INTO App_Role_Permissions (RoleID, PermissionCode)
+SELECT RoleID, 'VENDOR_VIEW' FROM App_Roles WHERE RoleName = 'Admin' UNION ALL
+SELECT RoleID, 'VENDOR_ADD' FROM App_Roles WHERE RoleName = 'Admin' UNION ALL
+SELECT RoleID, 'VENDOR_EDIT' FROM App_Roles WHERE RoleName = 'Admin' UNION ALL
+SELECT RoleID, 'VENDOR_DELETE' FROM App_Roles WHERE RoleName = 'Admin';
+สรุป
+เพิ่มเมนู: Insert ลงตาราง App_Menus
+
+กำหนด CRUD: Insert Permission Codes ลงตาราง App_Permissions
+
+ผูกเมนู: ใส่ Code สิทธิ์การมองเห็น (_VIEW) ลงใน App_Menus.RequiredPermissionCode
+
+ให้สิทธิ์คน: จับคู่ Role กับ Permission ในตาราง App_Role_Permissions ครับ
+
+
+
+
+ใช้กับระบบใน FCS_Database_Schema.md ได้ใช่ไหม
+
+ใช่ครับ ใช้ร่วมกันได้ทันที 100% ครับ
+
+เพราะในไฟล์ FCS_Database_Schema.md ที่คุณให้มา มีโครงสร้าง Part 3: Security & Access Control (ตาราง App_Permissions, App_Roles, App_Users) รอไว้อยู่แล้ว
+
+สิ่งที่เราต้องทำคือ "เพิ่มตาราง App_Menus" เข้าไปเชื่อมกับตาราง App_Permissions ที่มีอยู่เดิมครับ
+
+นี่คือ Script SQL สำหรับ "นำไปวางต่อท้ายไฟล์เดิม" เพื่อให้ระบบ Back Office สมบูรณ์ตามที่คุณต้องการ (จัดการบัตร, พนักงาน, ร้านค้า, แคชเชียร์, โปรโมชั่น) ครับ
+
+SQL Script ส่วนเพิ่มเติม (Add-on)
+SQL
+/* =============================================
+   PART 7: BACK OFFICE UI STRUCTURE (MENUS)
+   ใช้ร่วมกับ Part 3 Security เดิม
+   ============================================= */
+
+/* 1. สร้างตารางเมนู */
+CREATE TABLE App_Menus (
+    MenuID          INT IDENTITY(1,1) PRIMARY KEY,
+    ParentMenuID    INT NULL REFERENCES App_Menus(MenuID), -- เมนูแม่ (ถ้ามี)
+    MenuName_TH     NVARCHAR(100) NOT NULL,
+    MenuName_EN     NVARCHAR(100),
+    IconClass       NVARCHAR(50),                      -- เช่น 'fa-users', 'fa-credit-card'
+    RoutePath       NVARCHAR(100),                     -- URL ใน Frontend เช่น '/vendors'
+    SortOrder       INT DEFAULT 0,
+    
+    -- Link กับตาราง App_Permissions ใน Part 3
+    RequiredPermissionCode NVARCHAR(50) REFERENCES App_Permissions(PermissionCode), 
+    
+    IsActive        BIT DEFAULT 1
+);
+
+/* 2. สร้าง Permissions (สิทธิ์ CRUD) สำหรับ 5 โมดูลหลักที่คุณขอมา */
+-- เคลียร์ของเก่า (ถ้ามี) หรือ Insert ใหม่
+INSERT INTO App_Permissions (PermissionCode, Description, Category) VALUES 
+-- 1. จัดการร้านค้า (Vendors)
+('VENDOR_VIEW',   'ดูข้อมูลร้านค้า',    'Vendor'),
+('VENDOR_ADD',    'เพิ่มร้านค้าใหม่',    'Vendor'),
+('VENDOR_EDIT',   'แก้ไขข้อมูลร้านค้า',  'Vendor'),
+('VENDOR_DELETE', 'ลบร้านค้า',        'Vendor'),
+
+-- 2. จัดการพนักงาน (Employees)
+('EMP_VIEW',      'ดูข้อมูลพนักงาน',     'Employee'),
+('EMP_ADD',       'เพิ่มพนักงานใหม่',     'Employee'),
+('EMP_EDIT',      'แก้ไขข้อมูลพนักงาน',   'Employee'),
+('EMP_DELETE',    'ลบพนักงาน',         'Employee'),
+
+-- 3. จัดการบัตร (Cards)
+('CARD_VIEW',     'ดูข้อมูลบัตร',        'Card'),
+('CARD_ADD',      'ออกบัตรใหม่',        'Card'),
+('CARD_EDIT',     'แก้ไขสถานะบัตร',      'Card'), -- อายัด/ปลดล็อค
+('CARD_TOPUP',    'เติมเงินพิเศษ (Admin)', 'Card'), -- สิทธิ์เติมเงินหลังบ้าน (ถ้าจำเป็น)
+
+-- 4. จัดการเครื่องแคชเชียร์ (Terminals)
+('POS_VIEW',      'ดูรายการเครื่อง POS', 'Terminal'),
+('POS_ADD',       'ลงทะเบียนเครื่องใหม่',  'Terminal'),
+('POS_EDIT',      'แก้ไขตั้งค่าเครื่อง',    'Terminal'),
+
+-- 5. จัดการโปรโมชั่น (Promotions)
+('PROMO_VIEW',    'ดูโปรโมชั่น',        'Promotion'),
+('PROMO_ADD',     'สร้างโปรโมชั่น',      'Promotion'),
+('PROMO_EDIT',    'แก้ไข/ปิดโปรโมชั่น',   'Promotion');
+
+
+/* 3. สร้างรายการเมนู (Menu Items) และผูกกับสิทธิ์ */
+
+-- 3.1 สร้างเมนูแม่ "Master Data" (เห็นได้ทุกคนที่มีสิทธิ์ Login หรือจะกำหนดสิทธิ์ก็ได้)
+INSERT INTO App_Menus (MenuName_TH, IconClass, RoutePath, SortOrder, RequiredPermissionCode)
+VALUES ('ข้อมูลพื้นฐาน', 'fa-database', '/master', 1, NULL); 
+
+DECLARE @MasterMenuID INT = SCOPE_IDENTITY(); -- จำ ID เมนูแม่ไว้
+
+-- 3.2 สร้างเมนูย่อย โดยผูกกับ Permission _VIEW
+INSERT INTO App_Menus (ParentMenuID, MenuName_TH, RoutePath, SortOrder, RequiredPermissionCode) VALUES
+(@MasterMenuID, 'จัดการร้านค้า',      '/vendors',   1, 'VENDOR_VIEW'),
+(@MasterMenuID, 'จัดการพนักงาน',     '/employees', 2, 'EMP_VIEW'),
+(@MasterMenuID, 'จัดการบัตร',        '/cards',     3, 'CARD_VIEW'),
+(@MasterMenuID, 'เครื่องแคชเชียร์',    '/terminals', 4, 'POS_VIEW');
+
+-- 3.3 สร้างเมนูแยก สำหรับ Marketing
+INSERT INTO App_Menus (MenuName_TH, IconClass, RoutePath, SortOrder, RequiredPermissionCode)
+VALUES ('โปรโมชั่น & การตลาด', 'fa-tags', '/marketing', 2, 'PROMO_VIEW');
+วิธีการเรียกใช้งาน (Integration Workflow)
+เมื่อระบบทำงานจริง จะมีการเชื่อมโยงข้อมูลดังภาพนี้ครับ:
+
+User Login: App ได้ UserID ของนาย ก.
+
+Get Roles: หาว่า นาย ก. อยู่ Role ไหน (จาก App_User_Roles)
+
+Get Permissions: หาว่า Role นั้นมี Permission อะไรบ้าง (จาก App_Role_Permissions)
+
+Render Menu: Query ดึงเมนูเฉพาะที่นาย ก. มีสิทธิ์มองเห็น
+
+ตัวอย่าง Query สำหรับ API "GetMyMenu" (ดึงเมนูของฉัน):
+
+SQL
+/* ส่ง UserID เข้ามา เพื่อดึงเมนูที่เขามีสิทธิ์เห็น */
+CREATE PROCEDURE Sp_GetAppMenus_ByUser
+    @UserID INT
+AS
+BEGIN
+    SELECT DISTINCT 
+        m.MenuID, 
+        m.MenuName_TH, 
+        m.RoutePath, 
+        m.IconClass,
+        m.ParentMenuID
+    FROM App_Menus m
+    LEFT JOIN App_Permissions p ON m.RequiredPermissionCode = p.PermissionCode
+    LEFT JOIN App_Role_Permissions rp ON p.PermissionCode = rp.PermissionCode
+    LEFT JOIN App_User_Roles ur ON rp.RoleID = ur.RoleID
+    WHERE m.IsActive = 1
+      AND (
+          m.RequiredPermissionCode IS NULL  -- เมนูที่ไม่ต้องใช้สิทธิ์ (Public Menu)
+          OR ur.UserID = @UserID            -- หรือ User มี Role ที่ถือสิทธิ์นั้นอยู่
+      )
+    ORDER BY m.SortOrder;
+END
+สรุป: คุณสามารถใช้ไฟล์ FCS_Database_Schema.md เป็นแกนหลัก แล้ว Copy โค้ดชุดนี้ไปวางต่อท้ายได้เลย ระบบจะทำงานเชื่อมกันอย่างสมบูรณ์ครับ

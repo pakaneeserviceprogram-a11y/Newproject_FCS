@@ -1,0 +1,386 @@
+/* =============================================================
+   PART 1: DATABASE SETUP & CONFIGURATION
+   คำอธิบาย: สร้างฐานข้อมูลและตั้งค่าภาษาให้ถูกต้อง
+   ============================================================= */
+
+-- สร้าง Database ใหม่
+CREATE DATABASE FCS_ModernDB
+COLLATE Thai_CI_AS; -- สำคัญ: ตั้งค่าให้เรียงลำดับภาษาไทยถูกต้อง (ก-ฮ) และไม่สนใจตัวพิมพ์เล็ก/ใหญ่
+GO
+
+USE FCS_ModernDB;
+GO
+
+/* =============================================================
+   PART 2: MASTER DATA - INFRASTRUCTURE & VENDORS
+   คำอธิบาย: ข้อมูลหลักเกี่ยวกับจุดให้บริการและร้านค้า
+   ============================================================= */
+
+-- 1. ตารางจุดให้บริการ (Terminals)
+-- ใช้สำหรับลงทะเบียนเครื่อง POS/Cashier เพื่อระบุตัวตนในการออกภาษี
+CREATE TABLE Terminals (
+    TerminalID      NVARCHAR(20) NOT NULL PRIMARY KEY, -- รหัสเครื่องในโปรแกรม (เช่น 'CASH-01', 'FOOD-05')
+    TerminalName    NVARCHAR(100),                     -- ชื่อจุดที่ตั้ง (เช่น 'จุดแลกบัตร โซน A')
+    TerminalType    NVARCHAR(20),                      -- ประเภท: 'Cashier' (จุดเติมเงิน), 'Vendor' (ร้านค้า), 'Kiosk'
+    
+    -- ข้อมูล Hardware & Tax (สำคัญสำหรับสรรพากร)
+    MachineSerialNo NVARCHAR(50) NOT NULL,             -- S/N ของ Hardware (ต้องพิมพ์ลงท้ายใบกำกับภาษี)
+    POS_Reg_No      NVARCHAR(50),                      -- เลขทะเบียนเครื่องบันทึกการเก็บเงิน (ภ.พ.20)
+    LocationCode    NVARCHAR(20),                      -- รหัสสาขา/สถานที่ตั้ง
+    
+    IsActive        BIT DEFAULT 1,                     -- สถานะเครื่อง (1=ใช้งาน, 0=ยกเลิก)
+    CreatedAt       DATETIME DEFAULT GETDATE()
+);
+
+-- 2. ตารางร้านค้า (Vendors)
+-- เก็บข้อมูลผู้เช่าพื้นที่และเงื่อนไขการเงิน
+CREATE TABLE Vendors (
+    VendorID        NVARCHAR(20) NOT NULL PRIMARY KEY, -- รหัสร้านค้า
+    VendorName      NVARCHAR(100) NOT NULL,            -- ชื่อร้านค้า (เช่น 'ข้าวมันไก่เจ๊แดง')
+    OwnerName       NVARCHAR(100),                     -- ชื่อเจ้าของร้าน
+    
+    -- ข้อมูลภาษี (กรณีร้านค้าจด VAT เอง)
+    TaxID           NVARCHAR(20),                      -- เลขประจำตัวผู้เสียภาษี 13 หลัก
+    BranchID        NVARCHAR(10) DEFAULT '00000',      -- รหัสสาขาภาษี (00000 = สำนักงานใหญ่)
+    IsVatRegistered BIT DEFAULT 0,                     -- 0=ไม่จด VAT, 1=จด VAT
+    
+    -- เงื่อนไขการเงิน
+    GP_Share_Percent DECIMAL(5, 2) DEFAULT 0.00,       -- % GP ที่หักเข้าศูนย์ (เช่น 15.00)
+    Rent_Price      DECIMAL(12, 2) DEFAULT 0.00,       -- ค่าเช่ารายเดือนคงที่
+    IsActive        BIT DEFAULT 1
+);
+
+/* =============================================================
+   PART 3: MASTER DATA - PEOPLE & CARDS
+   คำอธิบาย: ข้อมูลผู้ใช้งานบัตรและกระเป๋าเงิน
+   ============================================================= */
+
+-- 3. ตารางพนักงาน/ลูกค้า (Employees)
+CREATE TABLE Employees (
+    EmployeeID      NVARCHAR(20) NOT NULL PRIMARY KEY, -- รหัสพนักงาน
+    FullName        NVARCHAR(150) NOT NULL,            -- ชื่อ-นามสกุล
+    Department      NVARCHAR(100),                     -- แผนก/สังกัด
+    Status          NVARCHAR(20) DEFAULT 'Active',     -- Active, Resigned
+    ExtraData       NVARCHAR(MAX),                     -- JSON เก็บข้อมูลยืดหยุ่น (เช่น LineID, แพ้อาหาร)
+    UpdatedAt       DATETIME DEFAULT GETDATE()
+);
+
+-- 4. ตารางกลุ่มบัตร (Card Groups)
+-- ใช้สำหรับแบ่งแยกราคาขาย (Dynamic Pricing)
+CREATE TABLE Card_Groups (
+    CardGroupID     NVARCHAR(20) NOT NULL PRIMARY KEY, -- รหัสกลุ่ม (เช่น 'STAFF', 'VIP', 'VISITOR')
+    GroupName       NVARCHAR(100),                     -- ชื่อกลุ่ม
+    IsDefault       BIT DEFAULT 0                      -- 1=กลุ่มมาตรฐาน (ถ้าไม่ระบุให้ใช้กลุ่มนี้)
+);
+
+-- 5. ตารางบัตร (Cards)
+-- เก็บยอดเงินคงเหลือและสถานะบัตร
+CREATE TABLE Cards (
+    CardUID         NVARCHAR(50) NOT NULL PRIMARY KEY, -- เลข UID ของชิป RFID/Smart Card
+    EmployeeID      NVARCHAR(20) REFERENCES Employees(EmployeeID), -- เจ้าของบัตร (ถ้ามี)
+    
+    CardGroupID     NVARCHAR(20) DEFAULT 'VISITOR' REFERENCES Card_Groups(CardGroupID), -- กลุ่มบัตร (เพื่อคำนวณราคาสินค้า)
+    
+    CashBalance     DECIMAL(12, 2) DEFAULT 0.00,       -- กระเป๋า 1: เงินสด (เติมเอง ถอนได้)
+    SubsidyBalance  DECIMAL(12, 2) DEFAULT 0.00,       -- กระเป๋า 2: เงินสวัสดิการ (บริษัทให้ ถอนไม่ได้)
+    
+    Status          NVARCHAR(20) DEFAULT 'Active',     -- Active, Blocked, Expired
+    ExpireDate      DATE NULL                          -- วันหมดอายุบัตร
+);
+
+/* =============================================================
+   PART 4: MASTER DATA - PRODUCTS & PRICING
+   คำอธิบาย: สินค้าและโครงสร้างราคาหลายระดับ (Dynamic Pricing)
+   ============================================================= */
+
+-- 6. ตารางสินค้า (Products)
+CREATE TABLE Products (
+    ProductID       NVARCHAR(20) NOT NULL PRIMARY KEY, -- รหัสสินค้า/Barcode
+    VendorID        NVARCHAR(20) NOT NULL REFERENCES Vendors(VendorID),
+    ProductName     NVARCHAR(150) NOT NULL,
+    BasePrice       DECIMAL(12, 2) NOT NULL DEFAULT 0, -- ราคาขายทั่วไป (Standard Price)
+    IsActive        BIT DEFAULT 1
+);
+
+-- 7. ตารางราคาพิเศษตามกลุ่ม (Price Tiers)
+-- เก็บราคาเฉพาะกลุ่ม (เช่น พนักงานซื้อถูกกว่าคนนอก)
+CREATE TABLE Product_Price_Tiers (
+    TierID          BIGINT IDENTITY(1,1) PRIMARY KEY,
+    ProductID       NVARCHAR(20) NOT NULL REFERENCES Products(ProductID),
+    CardGroupID     NVARCHAR(20) NOT NULL REFERENCES Card_Groups(CardGroupID),
+    
+    SpecialPrice    DECIMAL(12, 2) NOT NULL,           -- ราคาขายสำหรับกลุ่มนี้
+    
+    -- ป้องกันการตั้งราคาซ้ำซ้อนในกลุ่มเดิม
+    CONSTRAINT UK_Product_Tier UNIQUE (ProductID, CardGroupID)
+);
+-- สร้าง Index เพื่อให้ตอนยิง Barcode ค้นหาราคาได้เร็วที่สุด
+CREATE INDEX IDX_PriceLookup ON Product_Price_Tiers(ProductID, CardGroupID) INCLUDE (SpecialPrice);
+
+/* =============================================================
+   PART 5: PAYMENT CONFIGURATION
+   คำอธิบาย: รองรับการจ่ายเงินหลายรูปแบบ (Multi-Payment)
+   ============================================================= */
+
+-- 8. ประเภทการจ่ายเงิน (Payment Types)
+CREATE TABLE Ref_Payment_Types (
+    PaymentTypeID   NVARCHAR(20) NOT NULL PRIMARY KEY, -- 'CASH', 'QR', 'CREDIT', 'COUPON'
+    PaymentName     NVARCHAR(50),
+    NeedRefNo       BIT DEFAULT 0                      -- 1=บังคับกรอกเลขอ้างอิง (เช่น QR, Credit)
+);
+
+-- 9. ตารางคูปอง (Coupons)
+-- ใช้ตรวจสอบว่าคูปองถูกใช้ไปหรือยัง
+CREATE TABLE Coupons (
+    CouponCode      NVARCHAR(50) NOT NULL PRIMARY KEY, -- Barcode บนคูปอง
+    CouponName      NVARCHAR(100),
+    Value           DECIMAL(12, 2) NOT NULL DEFAULT 0, -- มูลค่าคูปอง
+    
+    Status          NVARCHAR(20) DEFAULT 'Active',     -- Active, Used, Expired
+    ExpireDate      DATE,                              -- วันหมดอายุ
+    
+    UsedAt          DATETIME NULL,                     -- วันที่ใช้งานไป
+    UsedByTxnID     BIGINT NULL                        -- ใช้งานที่ Transaction ไหน
+);
+
+/* =============================================================
+   PART 6: SYSTEM OPERATIONS
+   คำอธิบาย: การจัดการกะและการทำงานระบบ
+   ============================================================= */
+
+-- 10. ตารางกะการทำงาน (Shifts)
+-- ใช้ควบคุมการเปิด-ปิดยอดรายวัน/รายกะ
+CREATE TABLE System_Shifts (
+    ShiftID         INT IDENTITY(1,1) PRIMARY KEY,     -- เลขกะ (Running No)
+    ShiftDate       DATE DEFAULT CAST(GETDATE() AS DATE),
+    TerminalID      NVARCHAR(20) REFERENCES Terminals(TerminalID), -- กะนี้เปิดที่เครื่องไหน
+    
+    OpenedBy        NVARCHAR(50),                      -- User ที่เปิดกะ
+    OpenedAt        DATETIME DEFAULT GETDATE(),
+    ClosedAt        DATETIME NULL,                     -- เวลาปิดกะ (NULL = ยังไม่ปิด)
+    Status          NVARCHAR(20) DEFAULT 'Open'        -- Open, Closed
+);
+
+/* =============================================================
+   PART 7: TRANSACTIONS - CASHIER (TOP-UP / REFUND)
+   คำอธิบาย: ธุรกรรมเติมเงิน/คืนเงินที่จุดแคชเชียร์
+   ============================================================= */
+
+-- 11. หัวบิลแคชเชียร์ (Cashier Header)
+CREATE TABLE Txn_Cashier (
+    TxnID           BIGINT IDENTITY(1,1) PRIMARY KEY,
+    TxnDate         DATETIME DEFAULT GETDATE(),
+    ShiftID         INT REFERENCES System_Shifts(ShiftID),
+    
+    -- Snapshot ข้อมูลเครื่อง (กฎหมายภาษี: บิลต้องระบุเครื่องที่ออก ณ เวลานั้น)
+    TerminalID      NVARCHAR(20) NOT NULL REFERENCES Terminals(TerminalID),
+    MachineSerialNo NVARCHAR(50),                      -- S/N เครื่องตอนทำรายการ
+    POS_Reg_No      NVARCHAR(50),                      -- ทะเบียนเครื่องตอนทำรายการ
+    
+    -- Snapshot ข้อมูลภาษี (ใครเป็นผู้ออกบิล)
+    IssuerTaxID     NVARCHAR(20),                      -- เลขผู้เสียภาษี
+    TaxInvoiceNo    NVARCHAR(50),                      -- เลขที่ใบกำกับภาษี (ABB/Full)
+    IsFullTax       BIT DEFAULT 0,                     -- 1=ขอใบกำกับเต็มรูป
+    
+    -- ข้อมูลธุรกรรม
+    CardUID         NVARCHAR(50) NOT NULL REFERENCES Cards(CardUID),
+    TxnType         NVARCHAR(20) NOT NULL,             -- 'TopUp', 'Refund', 'Deposit'
+    TotalAmount     DECIMAL(12, 2) NOT NULL,           -- ยอดเงินรวมทั้งบิล
+    
+    CashierUserID   NVARCHAR(50),                      -- พนักงานที่ทำรายการ
+    Remark          NVARCHAR(255)
+);
+-- Index สำหรับค้นหาประวัติ
+CREATE INDEX IDX_Cashier_Card ON Txn_Cashier(CardUID, TxnDate);
+CREATE INDEX IDX_Cashier_Tax  ON Txn_Cashier(TaxInvoiceNo);
+
+-- 12. รายละเอียดการจ่ายเงินแคชเชียร์ (Cashier Payments)
+-- รองรับการจ่ายหลายแบบใน 1 บิล (เช่น เงินสด + คูปอง)
+CREATE TABLE Txn_Cashier_Payments (
+    PaymentID       BIGINT IDENTITY(1,1) PRIMARY KEY,
+    TxnID           BIGINT NOT NULL REFERENCES Txn_Cashier(TxnID),
+    
+    PaymentTypeID   NVARCHAR(20) NOT NULL REFERENCES Ref_Payment_Types(PaymentTypeID),
+    Amount          DECIMAL(12, 2) NOT NULL,           -- ยอดเงินที่จ่ายด้วยวิธีนี้
+    
+    RefNo           NVARCHAR(100),                     -- เลขอ้างอิง (เช่น QR Ref, Approval Code)
+    RefData         NVARCHAR(MAX)                      -- ข้อมูลเพิ่ม (เช่น เลขคูปอง)
+);
+CREATE INDEX IDX_Payment_Ref ON Txn_Cashier_Payments(RefNo); -- เพื่อตรวจสอบ QR ซ้ำ
+
+/* =============================================================
+   PART 8: TRANSACTIONS - SALES (POS)
+   คำอธิบาย: ธุรกรรมขายสินค้าที่ร้านค้า
+   ============================================================= */
+
+-- 13. หัวบิลขาย (Sales Order Header)
+CREATE TABLE Sales_Orders (
+    OrderID         BIGINT IDENTITY(1,1) PRIMARY KEY,
+    OrderNo         NVARCHAR(30),                      -- เลขที่บิลภายใน
+    OrderDate       DATETIME DEFAULT GETDATE(),
+    ShiftID         INT REFERENCES System_Shifts(ShiftID),
+    
+    -- Snapshot เครื่องและภาษี
+    TerminalID      NVARCHAR(20) NOT NULL REFERENCES Terminals(TerminalID),
+    MachineSerialNo NVARCHAR(50),
+    POS_Reg_No      NVARCHAR(50),
+    
+    -- Snapshot ผู้ขาย (Vendor หรือ ศูนย์อาหาร)
+    VendorID        NVARCHAR(20) NOT NULL REFERENCES Vendors(VendorID),
+    IssuerTaxID     NVARCHAR(20),                      -- เลขผู้เสียภาษี (ของร้าน หรือ ศูนย์)
+    TaxInvoiceNo    NVARCHAR(50),                      -- เลขที่ใบกำกับภาษีอย่างย่อ (ABB)
+    IsFullTax       BIT DEFAULT 0,
+    
+    -- การตัดเงินจากบัตร
+    CardUID         NVARCHAR(50) NOT NULL REFERENCES Cards(CardUID),
+    
+    -- ยอดเงิน
+    TotalAmount     DECIMAL(12, 2) NOT NULL,           -- ยอดสุทธิ (รวม VAT)
+    VatAmount       DECIMAL(12, 2) DEFAULT 0,          -- ยอด VAT ถอดออกมา
+    NetValAmount    DECIMAL(12, 2) DEFAULT 0,          -- มูลค่าสินค้าก่อน VAT
+    
+    -- ตัดจากกระเป๋าไหนบ้าง
+    CashUsed        DECIMAL(12, 2) DEFAULT 0,          -- ตัดจากเงินเติม
+    SubsidyUsed     DECIMAL(12, 2) DEFAULT 0,          -- ตัดจากสวัสดิการ
+    
+    Status          NVARCHAR(20) DEFAULT 'Completed'   -- Completed, Void
+);
+CREATE INDEX IDX_Sales_Vendor ON Sales_Orders(VendorID, OrderDate);
+
+-- 14. รายการสินค้าในบิล (Sales Order Items)
+CREATE TABLE Sales_Order_Items (
+    ItemID          BIGINT IDENTITY(1,1) PRIMARY KEY,
+    OrderID         BIGINT NOT NULL REFERENCES Sales_Orders(OrderID),
+    ProductID       NVARCHAR(20) REFERENCES Products(ProductID),
+    
+    -- Snapshot ข้อมูลสินค้า (เผื่ออนาคตเปลี่ยนชื่อ/ราคา)
+    ProductName_Log NVARCHAR(150),                     
+    Quantity        INT DEFAULT 1,
+    UnitPrice       DECIMAL(12, 2),                    -- ราคาต่อหน่วยที่ขายจริง (หลังคำนวณ Tier แล้ว)
+    TotalPrice      AS (Quantity * UnitPrice) PERSISTED -- คำนวณให้อัตโนมัติ
+);
+
+-- 15. การรับชำระเงินหน้าร้าน (เผื่ออนาคตร้านรับ QR เองได้)
+CREATE TABLE Sales_Payments (
+    PaymentID       BIGINT IDENTITY(1,1) PRIMARY KEY,
+    OrderID         BIGINT NOT NULL REFERENCES Sales_Orders(OrderID),
+    PaymentTypeID   NVARCHAR(20) DEFAULT 'CARD',       -- ปกติคือตัดบัตร (CARD)
+    Amount          DECIMAL(12, 2),
+    RefNo           NVARCHAR(100)
+);
+
+/* =============================================================
+   PART 9: SECURITY & USER MANAGEMENT (RBAC + AD)
+   คำอธิบาย: ระบบจัดการผู้ใช้ สิทธิ์ และการเชื่อมต่อ Active Directory
+   ============================================================= */
+
+-- 16. สิทธิ์การใช้งาน (Permissions) - รายการว่าทำอะไรได้บ้าง
+CREATE TABLE App_Permissions (
+    PermissionCode  NVARCHAR(50) NOT NULL PRIMARY KEY, -- Key (เช่น 'EMP_EDIT')
+    Description     NVARCHAR(100),                     -- คำอธิบาย
+    Category        NVARCHAR(50)                       -- หมวดหมู่ (เช่น 'BackOffice')
+);
+
+-- 17. บทบาท (Roles) - กลุ่มของสิทธิ์
+CREATE TABLE App_Roles (
+    RoleID          INT IDENTITY(1,1) PRIMARY KEY,
+    RoleName        NVARCHAR(50) NOT NULL UNIQUE,      -- ชื่อบทบาท (เช่น 'Admin', 'Cashier')
+    Description     NVARCHAR(100),
+    IsSystemRole    BIT DEFAULT 0                      -- 1=บทบาทพื้นฐาน ห้ามลบ
+);
+
+-- 18. จับคู่ Role <-> Permission
+CREATE TABLE App_Role_Permissions (
+    RoleID          INT NOT NULL REFERENCES App_Roles(RoleID),
+    PermissionCode  NVARCHAR(50) NOT NULL REFERENCES App_Permissions(PermissionCode),
+    PRIMARY KEY (RoleID, PermissionCode)
+);
+
+-- 19. ผู้ใช้งานระบบ (Users) - รองรับ Hybrid (AD + Local)
+CREATE TABLE App_Users (
+    UserID          INT IDENTITY(1,1) PRIMARY KEY,
+    Username        NVARCHAR(50) NOT NULL UNIQUE,      -- Login Name
+    DisplayName     NVARCHAR(100),                     -- ชื่อที่แสดง
+    
+    -- Authentication AD
+    IsADUser        BIT DEFAULT 0,                     -- 1=Login ผ่าน AD
+    AD_Domain       NVARCHAR(50),                      -- ชื่อ Domain
+    AD_SID          NVARCHAR(100),                     -- SID จาก AD (Unique ID)
+    
+    -- Authentication Local (สำหรับร้านค้า)
+    PasswordHash    NVARCHAR(255),                     -- รหัสผ่านเข้ารหัส (SHA256/Bcrypt)
+    
+    -- สถานะและการเชื่อมโยง
+    IsActive        BIT DEFAULT 1,
+    RelatedVendorID NVARCHAR(20),                      -- ผูกกับร้านค้า (ถ้ามี)
+    RelatedEmpID    NVARCHAR(20)                       -- ผูกกับพนักงาน (ถ้ามี)
+);
+
+-- 20. จับคู่ User <-> Role (กำหนดสิทธิ์รายคน)
+CREATE TABLE App_User_Roles (
+    UserID          INT NOT NULL REFERENCES App_Users(UserID),
+    RoleID          INT NOT NULL REFERENCES App_Roles(RoleID),
+    PRIMARY KEY (UserID, RoleID)
+);
+
+-- 21. จับคู่ AD Group <-> Role (กำหนดสิทธิ์อัตโนมัติตามกลุ่ม AD)
+CREATE TABLE App_AD_Group_Mappings (
+    MappingID       INT IDENTITY(1,1) PRIMARY KEY,
+    AD_GroupName    NVARCHAR(100) NOT NULL,            -- ชื่อ Group ใน AD (เช่น 'Canteen_Admins')
+    RoleID          INT NOT NULL REFERENCES App_Roles(RoleID) -- บทบาทที่จะได้รับอัตโนมัติ
+);
+
+GO
+
+/* =============================================================
+   PART 10: STORED PROCEDURES (LOGIC)
+   ============================================================= */
+
+-- Logic: ดึงราคาสินค้า (เช็คราคากลุ่มก่อน ถ้าไม่มีให้ใช้ราคาปกติ)
+CREATE PROCEDURE GetProductPrice
+    @ProductID NVARCHAR(20),
+    @CardGroupID NVARCHAR(20)
+AS
+BEGIN
+    SELECT 
+        p.ProductID,
+        p.ProductName,
+        COALESCE(t.SpecialPrice, p.BasePrice) AS FinalPrice 
+    FROM Products p
+    LEFT JOIN Product_Price_Tiers t 
+        ON p.ProductID = t.ProductID 
+        AND t.CardGroupID = @CardGroupID
+    WHERE p.ProductID = @ProductID;
+END
+GO
+
+/* =============================================================
+   PART 11: INITIAL DATA (SEEDING)
+   คำอธิบาย: ข้อมูลเริ่มต้นที่ระบบต้องมี
+   ============================================================= */
+
+-- เพิ่มประเภทการจ่ายเงินมาตรฐาน
+INSERT INTO Ref_Payment_Types (PaymentTypeID, PaymentName, NeedRefNo) VALUES 
+('CASH', N'เงินสด', 0),
+('QR', N'QR PromptPay', 1),
+('CREDIT', N'บัตรเครดิต', 1),
+('COUPON', N'คูปองเงินสด', 1);
+
+-- เพิ่มกลุ่มบัตรมาตรฐาน
+INSERT INTO Card_Groups (CardGroupID, GroupName, IsDefault) VALUES
+('VISITOR', N'บุคคลทั่วไป', 1),
+('STAFF', N'พนักงานบริษัท', 0),
+('VIP', N'ผู้บริหาร', 0);
+
+-- เพิ่มสิทธิ์การใช้งาน (ตัวอย่าง)
+INSERT INTO App_Permissions (Category, PermissionCode, Description) VALUES
+('BackOffice', 'EMP_MANAGE', N'จัดการข้อมูลพนักงาน'),
+('Cashier', 'CSH_TOPUP', N'เติมเงิน'),
+('Cashier', 'CSH_VOID', N'ยกเลิกรายการ'),
+('Vendor', 'VEN_SELL', N'ขายสินค้า');
+
+-- เพิ่มบทบาทมาตรฐาน
+INSERT INTO App_Roles (RoleName, IsSystemRole) VALUES 
+('SuperAdmin', 1), ('Cashier', 1), ('Vendor', 1);
+
+GO

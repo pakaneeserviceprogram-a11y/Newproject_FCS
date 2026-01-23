@@ -1,0 +1,138 @@
+ได้ครับ นี่คือ ER Diagram (Entity Relationship Diagram) ที่สร้างจาก Schema ของคุณครับ
+
+เพื่อให้ดูง่ายและเข้าใจระบบได้ชัดเจนที่สุด ผมขอแบ่ง Diagram ออกเป็น 3 ส่วนหลักตามกลุ่มการทำงานครับ:
+
+Core Business (บัตร, การขาย, สินค้า)
+
+Transactions & Finance (การเติมเงิน, การจ่ายเงิน, โปรโมชั่น)
+
+Security & Back Office (สิทธิ์, ผู้ใช้งาน, เมนู)
+
+คุณสามารถนำ Code Mermaid ด้านล่างไปใช้ในโปรแกรมทำ Diagram (เช่น draw.io หรือ Mermaid Live Editor) ได้เลยครับ
+
+1. ภาพรวมระบบหลัก (Core Business)
+แสดงความสัมพันธ์ระหว่าง คน (Employees) -> บัตร (Cards) -> ร้านค้า (Vendors) -> สินค้า (Products)
+
+Code snippet
+erDiagram
+    %% Master Data Relationships
+    Employees ||--o{ Cards : "owns"
+    Card_Groups ||--o{ Cards : "classifies"
+    Card_Groups ||--o{ Product_Price_Tiers : "defines price tier"
+    Card_Groups ||--o{ Subsidy_Rules : "receives welfare"
+    
+    Vendors ||--o{ Products : "sells"
+    Vendors ||--o{ Sales_Orders : "processes"
+    Products ||--o{ Product_Price_Tiers : "has special price"
+    Products ||--o{ Sales_Order_Items : "listed in"
+
+    %% Transaction Links
+    Cards ||--o{ Sales_Orders : "purchases"
+    Cards ||--o{ Txn_Cashier : "topup/refund"
+    
+    %% Table Definitions (Simplified)
+    Employees {
+        string EmployeeID PK
+        string FullName
+    }
+    Cards {
+        string CardUID PK
+        decimal CashBalance
+        decimal SubsidyBalance
+    }
+    Card_Groups {
+        string CardGroupID PK
+        string GroupName
+    }
+    Vendors {
+        string VendorID PK
+        string VendorName
+    }
+    Products {
+        string ProductID PK
+        decimal BasePrice
+    }
+2. ส่วนการเงินและโปรโมชั่น (Finance & Promotion)
+เน้น Flow การเติมเงิน การตัดเงินสวัสดิการ และการให้รางวัล
+
+Code snippet
+erDiagram
+    %% Cashier & Payments
+    Terminals ||--o{ Txn_Cashier : "issues"
+    System_Shifts ||--o{ Txn_Cashier : "groups"
+    Txn_Cashier ||--|{ Txn_Cashier_Payments : "contains"
+    Ref_Payment_Types ||--o{ Txn_Cashier_Payments : "defines"
+    
+    %% Promotion & Loyalty
+    Txn_Cashier ||--o{ Promo_Redemption_Log : "triggers"
+    Promo_Cashier_Campaigns ||--o{ Promo_Redemption_Log : "rewards"
+    
+    %% Welfare (Subsidy)
+    Subsidy_Rules ||--o{ Txn_Subsidy_Log : "generates"
+    Cards ||--o{ Txn_Subsidy_Log : "audit trail"
+
+    %% Sales
+    Sales_Orders ||--|{ Sales_Order_Items : "contains"
+
+    %% Table Definitions
+    Txn_Cashier {
+        bigint TxnID PK
+        decimal TotalAmount
+        string TxnType
+    }
+    Txn_Cashier_Payments {
+        bigint PaymentID PK
+        decimal Amount
+    }
+    Promo_Cashier_Campaigns {
+        int CampaignID PK
+        string RewardType
+    }
+    Subsidy_Rules {
+        int RuleID PK
+        decimal Amount
+        string TopUpMode
+    }
+3. ส่วนความปลอดภัยและหลังบ้าน (Security & Admin)
+แสดงความสัมพันธ์ของ User -> Role -> Permission -> Menu
+
+Code snippet
+erDiagram
+    %% User & Roles
+    App_Users ||--o{ App_User_Roles : "has"
+    App_Roles ||--o{ App_User_Roles : "assigned to"
+    App_AD_Group_Mappings }|--|| App_Roles : "maps to"
+
+    %% Permissions
+    App_Roles ||--o{ App_Role_Permissions : "has"
+    App_Permissions ||--o{ App_Role_Permissions : "assigned to"
+    
+    %% Menus
+    App_Permissions ||--o{ App_Menus : "controls visibility"
+    App_Menus ||--o{ App_Menus : "parent of"
+
+    %% Table Definitions
+    App_Users {
+        int UserID PK
+        string Username
+    }
+    App_Roles {
+        int RoleID PK
+        string RoleName
+    }
+    App_Permissions {
+        string PermissionCode PK
+        string Category
+    }
+    App_Menus {
+        int MenuID PK
+        string MenuName_TH
+    }
+คำอธิบายสัญลักษณ์
+||--o{ (One-to-Many): ความสัมพันธ์แบบ 1 ต่อ หลาย (เช่น 1 ร้านค้า มีหลายสินค้า)
+
+||--|{ (One-to-Many, Mandatory): ความสัมพันธ์แบบ 1 ต่อ หลาย และต้องมีอย่างน้อย 1 (เช่น 1 บิล ต้องมีรายการจ่ายเงินอย่างน้อย 1 รายการ)
+
+}|--|| (Many-to-One): หลายสิ่งเชื่อมไปยัง 1 สิ่ง
+
+คุณสามารถ Copy Code ในกล่องข้อความ ไปวางในไฟล์ Markdown (.md) เพื่อให้ทีม Dev ดูได้ทันทีครับ

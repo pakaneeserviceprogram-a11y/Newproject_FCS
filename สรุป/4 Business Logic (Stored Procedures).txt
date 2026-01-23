@@ -1,0 +1,91 @@
+3. ⚙️ Business Logic (Stored Procedures)
+Logic หลักสำหรับการทำงานอัตโนมัติของระบบ
+
+3.1 ระบบเติมเงินสวัสดิการอัตโนมัติ (Auto Subsidy)
+Usage: ตั้ง Schedule ให้รัน SP นี้ทุกเที่ยงคืน (00:01 น.)
+
+SQL
+CREATE PROCEDURE Sp_Subsidy_Process_AutoRules
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @Today DATE = CAST(GETDATE() AS DATE);
+    DECLARE @DayOfMonth INT = DAY(@Today);
+
+    DECLARE @RuleCursor CURSOR;
+    DECLARE @RuleID INT, @CardGroup NVARCHAR(20), @Amt DECIMAL(12,2), @Mode NVARCHAR(20), @RuleName NVARCHAR(100);
+
+    -- ดึงกฎที่ต้องทำงานวันนี้
+    SET @RuleCursor = CURSOR FOR
+    SELECT RuleID, RuleName, CardGroupID, Amount, TopUpMode
+    FROM Subsidy_Rules
+    WHERE IsActive = 1 AND (LastRunDate IS NULL OR LastRunDate < @Today)
+      AND (FrequencyType = 'DAILY' OR (FrequencyType = 'MONTHLY' AND ExecutionDay = @DayOfMonth));
+
+    OPEN @RuleCursor;
+    FETCH NEXT FROM @RuleCursor INTO @RuleID, @RuleName, @CardGroup, @Amt, @Mode;
+
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        BEGIN TRANSACTION
+        BEGIN TRY
+            -- 1. บันทึก Log ก่อนดำเนินการ
+            INSERT INTO Txn_Subsidy_Log (CardUID, EmployeeID, Amount, PreviousBalance, NewBalance, TxnType, RuleID, PerformedBy, Remark)
+            SELECT C.CardUID, C.EmployeeID, @Amt, C.SubsidyBalance,
+                CASE WHEN @Mode = 'RESET' THEN @Amt ELSE C.SubsidyBalance + @Amt END,
+                'AUTO', @RuleID, 'SYSTEM', 'Auto Rule: ' + @RuleName
+            FROM Cards C WHERE C.CardGroupID = @CardGroup AND C.Status = 'Active';
+
+            -- 2. อัปเดตเงินในกระเป๋า Subsidy
+            IF @Mode = 'RESET' -- ล้างยอดเก่า (เช่น ให้วันละ 50)
+                UPDATE Cards SET SubsidyBalance = @Amt WHERE CardGroupID = @CardGroup AND Status = 'Active';
+            ELSE -- ทบยอด (สะสมได้)
+                UPDATE Cards SET SubsidyBalance = SubsidyBalance + @Amt WHERE CardGroupID = @CardGroup AND Status = 'Active';
+
+            -- 3. อัปเดตสถานะกฎ
+            UPDATE Subsidy_Rules SET LastRunDate = @Today WHERE RuleID = @RuleID;
+
+            COMMIT TRANSACTION
+        END TRY
+        BEGIN CATCH
+            ROLLBACK TRANSACTION;
+        END CATCH
+        FETCH NEXT FROM @RuleCursor INTO @RuleID, @RuleName, @CardGroup, @Amt, @Mode;
+    END
+    CLOSE @RuleCursor; DEALLOCATE @RuleCursor;
+END
+GO
+3.2 ระบบโปรโมชั่นเติมเงิน (Cashier Promotion)
+Usage: เรียกใช้เมื่อแคชเชียร์กดเติมเงิน เพื่อคำนวณของแถม
+
+SQL
+CREATE PROCEDURE Sp_Cashier_ApplyPromo
+    @TxnID BIGINT, @TopUpAmount DECIMAL(12,2), @CardUID NVARCHAR(50)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @BonusAmt DECIMAL(12,2) = 0;
+    DECLARE @PointsAmt DECIMAL(12,2) = 0;
+
+    -- เลือกโปรโมชั่นที่ดีที่สุด
+    SELECT TOP 1 
+        @BonusAmt = CASE WHEN RewardType = 'CASH_BONUS' THEN RewardValue ELSE 0 END,
+        @PointsAmt = CASE WHEN RewardType = 'POINT' THEN RewardValue ELSE 0 END
+    FROM Promo_Cashier_Campaigns
+    WHERE IsActive = 1 AND GETDATE() BETWEEN StartDate AND EndDate AND @TopUpAmount >= MinTopUpAmount
+    ORDER BY MinTopUpAmount DESC;
+
+    -- ให้รางวัล (ถ้ามี)
+    IF @BonusAmt > 0
+    BEGIN
+        UPDATE Cards SET SubsidyBalance = SubsidyBalance + @BonusAmt WHERE CardUID = @CardUID; -- เข้า Subsidy (ถอนไม่ได้)
+        INSERT INTO Promo_Redemption_Log (TxnID, CardUID, RewardType, RewardAmount) VALUES (@TxnID, @CardUID, 'CASH_BONUS', @BonusAmt);
+    END
+
+    IF @PointsAmt > 0
+    BEGIN
+        UPDATE Cards SET PointBalance = PointBalance + @PointsAmt WHERE CardUID = @CardUID;
+        INSERT INTO Promo_Redemption_Log (TxnID, CardUID, RewardType, RewardAmount) VALUES (@TxnID, @CardUID, 'POINT', @PointsAmt);
+    END
+END
+GO

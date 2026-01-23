@@ -1,0 +1,22 @@
+/* 1. สร้างกลุ่มบัตร (จำเป็นสำหรับ Subsidy Rules) */
+INSERT INTO Card_Groups (CardGroupID, GroupName, IsDefault) VALUES 
+('VISITOR', 'บุคคลทั่วไป', 1),
+('STAFF',   'พนักงานประจำ', 0),
+('VIP',     'ผู้บริหาร', 0);
+
+/* 2. สร้าง Roles & Permissions */
+INSERT INTO App_Roles (RoleName, IsSystemRole) VALUES ('SystemAdmin', 1), ('Cashier', 0), ('VendorOwner', 0);
+
+INSERT INTO App_Permissions (PermissionCode, Description, Category) VALUES
+('POS_VIEW', 'เข้าใช้ POS', 'Terminal'),
+('VENDOR_VIEW', 'ดูร้านค้า', 'Vendor'),
+('EMP_VIEW', 'ดูพนักงาน', 'Employee'),
+('CARD_VIEW', 'ดูข้อมูลบัตร', 'Card');
+
+/* 3. สร้างเมนูนำทาง */
+INSERT INTO App_Menus (MenuName_TH, RoutePath, RequiredPermissionCode) VALUES 
+('จัดการร้านค้า', '/vendors', 'VENDOR_VIEW'),
+('จัดการพนักงาน', '/employees', 'EMP_VIEW');
+
+/* 4. สร้าง User Admin */
+INSERT INTO App_Users (Username, IsActive) VALUES ('admin', 1);

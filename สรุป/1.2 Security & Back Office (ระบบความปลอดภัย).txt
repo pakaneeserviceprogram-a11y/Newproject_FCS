@@ -1,0 +1,6 @@
+erDiagram
+    App_Users ||--|{ App_User_Roles : "has"
+    App_Roles ||--|{ App_Role_Permissions : "has"
+    App_Permissions ||--|{ App_Role_Permissions : "assigned to"
+    App_Permissions ||--o{ App_Menus : "controls visibility"
+    App_Menus ||--o{ App_Menus : "parent of"

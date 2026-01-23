@@ -1,0 +1,249 @@
+เพิ่มการเติมเงินสวัสดิการให้กับพนักงานต้องเก็บ log การเติม เติมได้ 2 แบบ เข้าแบบ manual และเติมแบบอัตโนมัติแบบมีเงื่อนไข เช่น เข้าทุกวันที่ 1 หรือเข้าทุกวัน แต่ละกลุ่มบัตรเข้าไม่เท่ากัน
+
+ได้ครับ ระบบสวัสดิการ (Welfare/Subsidy) มีความละเอียดอ่อนตรงที่ต้องแยกออกจาก "เงินเติมเอง" (Cash) อย่างเด็ดขาด และต้องตรวจสอบย้อนหลังได้ง่าย
+
+ผมขอเสนอการออกแบบ Part 10: Welfare Management System โดยเพิ่ม 2 ตารางหลัก และ Stored Procedure สำหรับจัดการเงื่อนไขการเติมเงินครับ
+
+1. Database Schema Design (ส่วนที่ต้องเพิ่ม)
+เราต้องมีตารางเก็บ "กฎการให้สวัสดิการ" (Rules) เพื่อรองรับเงื่อนไขที่บอกว่ากลุ่มไหนได้เท่าไหร่ และตาราง "ประวัติการเติม" (Log) แยกต่างหากจาก Transaction ขายปกติครับ
+
+SQL
+/* =============================================
+   PART 10: WELFARE & SUBSIDY MANAGEMENT
+   ระบบเติมเงินสวัสดิการ (Manual & Auto)
+   ============================================= */
+
+/* [Subsidy_Rules]
+   Description: กฎการให้สวัสดิการอัตโนมัติ
+   Usage: ตั้งค่าว่าบัตรกลุ่มไหน ได้เงินเท่าไหร่ ได้ทุกวันไหน
+*/
+CREATE TABLE Subsidy_Rules (
+    RuleID          INT IDENTITY(1,1) PRIMARY KEY,
+    RuleName        NVARCHAR(100) NOT NULL,            -- เช่น 'Daily Staff Allowance 50 THB'
+    
+    -- เงื่อนไขกลุ่มเป้าหมาย
+    CardGroupID     NVARCHAR(20) NOT NULL REFERENCES Card_Groups(CardGroupID), -- ให้เฉพาะกลุ่มนี้
+    
+    -- เงื่อนไขเวลาและการให้
+    FrequencyType   NVARCHAR(20) DEFAULT 'DAILY',      -- 'DAILY'=ทุกวัน, 'MONTHLY'=ทุกเดือน, 'ONE_TIME'=ครั้งเดียว
+    ExecutionDay    INT DEFAULT 0,                     -- กรณี MONTHLY: ระบุวันที่ (เช่น 1 = วันที่ 1 ของเดือน)
+    
+    Amount          DECIMAL(12, 2) NOT NULL,           -- จำนวนเงินที่ให้
+    
+    -- โหมดการจัดการยอดเก่า (สำคัญมาก)
+    TopUpMode       NVARCHAR(20) DEFAULT 'RESET',      
+    -- 'RESET' = ล้างยอดเก่าทิ้งแล้วเติมใหม่ (เช่น ให้วันละ 50 ถ้าไม่ใช้ก็ตัดทิ้ง)
+    -- 'STACK' = ทบยอด (สะสมไปเรื่อยๆ)
+    
+    IsActive        BIT DEFAULT 1,
+    LastRunDate     DATE NULL                          -- กันการรันซ้ำในวันเดียวกัน
+);
+
+/* [Txn_Subsidy_Log]
+   Description: ประวัติการเติมเงินสวัสดิการ
+   Usage: ใช้ Audit ว่าใครเติมให้ หรือระบบเติมให้ตอนไหน
+*/
+CREATE TABLE Txn_Subsidy_Log (
+    LogID           BIGINT IDENTITY(1,1) PRIMARY KEY,
+    TxnDate         DATETIME DEFAULT GETDATE(),
+    
+    CardUID         NVARCHAR(50) NOT NULL,             -- เติมเข้าบัตรใบไหน
+    EmployeeID      NVARCHAR(20),                      -- (Option) เก็บเผื่อ Card หายจะได้ตามถูกคน
+    
+    Amount          DECIMAL(12, 2) NOT NULL,           -- ยอดที่เติม
+    PreviousBalance DECIMAL(12, 2) DEFAULT 0,          -- ยอดก่อนเติม (เพื่อการตรวจสอบ)
+    NewBalance      DECIMAL(12, 2) DEFAULT 0,          -- ยอดหลังเติม
+    
+    TxnType         NVARCHAR(20) NOT NULL,             -- 'MANUAL'=คนกดเติม, 'AUTO'=ระบบเติมตามรอบ
+    RuleID          INT NULL REFERENCES Subsidy_Rules(RuleID), -- อ้างอิงกฎ (ถ้าเป็น AUTO)
+    
+    PerformedBy     NVARCHAR(50),                      -- ชื่อ User (ถ้า Manual) หรือ 'SYSTEM' (ถ้า Auto)
+    Remark          NVARCHAR(255)
+);
+CREATE INDEX IDX_Subsidy_Log ON Txn_Subsidy_Log(TxnDate, CardUID);
+2. Logic การทำงาน (Stored Procedures)
+ผมแยก Logic ออกเป็น 2 ตัวครับ คือ แบบ Manual (สำหรับ HR/Admin กดให้รายคน) และ แบบ Auto (สำหรับ Job ตั้งเวลา)
+
+2.1 แบบ Manual (เติมให้รายคน/รายกลุ่ม เป็นครั้งคราว)
+เช่น ให้โบนัสพิเศษ, หรือชดเชยค่าอาหาร
+
+SQL
+CREATE PROCEDURE Sp_Subsidy_Manual_TopUp
+    @CardUID NVARCHAR(50),
+    @Amount DECIMAL(12,2),
+    @Remark NVARCHAR(255),
+    @AdminUser NVARCHAR(50)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    BEGIN TRANSACTION;
+    BEGIN TRY
+        -- 1. ดึงค่าเก่ามาเก็บไว้ก่อน
+        DECLARE @OldBal DECIMAL(12,2);
+        DECLARE @EmpID NVARCHAR(20);
+        
+        SELECT @OldBal = SubsidyBalance, @EmpID = EmployeeID 
+        FROM Cards WHERE CardUID = @CardUID;
+
+        IF @OldBal IS NULL 
+        BEGIN
+            THROW 50001, 'Card not found or inactive', 1;
+        END
+
+        -- 2. อัปเดตยอดเงิน (Manual ส่วนใหญ่จะเป็นการ Top-up เพิ่ม คือแบบ STACK)
+        UPDATE Cards 
+        SET SubsidyBalance = SubsidyBalance + @Amount 
+        WHERE CardUID = @CardUID;
+
+        -- 3. บันทึก Log
+        INSERT INTO Txn_Subsidy_Log 
+        (CardUID, EmployeeID, Amount, PreviousBalance, NewBalance, TxnType, PerformedBy, Remark)
+        VALUES 
+        (@CardUID, @EmpID, @Amount, @OldBal, @OldBal + @Amount, 'MANUAL', @AdminUser, @Remark);
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+2.2 แบบ Automatic (เติมตามเงื่อนไขที่ตั้งไว้)
+อันนี้คือหัวใจสำคัญครับ Stored Procedure นี้ควรถูกเรียกโดย SQL Agent Job หรือ Windows Task Scheduler ทุกๆ เที่ยงคืน (00:01 น.)
+
+SQL
+CREATE PROCEDURE Sp_Subsidy_Process_AutoRules
+AS
+BEGIN
+    SET NOCOUNT ON;
+    
+    DECLARE @Today DATE = CAST(GETDATE() AS DATE);
+    DECLARE @DayOfMonth INT = DAY(@Today); -- วันที่เท่าไหร่ (1-31)
+
+    -- วนลูปหากฎที่เข้าเงื่อนไขวันนี้
+    -- Logic: เลือก Rule ที่ Active และ (เป็นแบบรายวัน หรือ เป็นแบบรายเดือนที่วันที่ตรง)
+    -- และยังไม่เคยรันในวันนี้
+    
+    DECLARE @RuleCursor CURSOR;
+    DECLARE @RuleID INT, @CardGroup NVARCHAR(20), @Amt DECIMAL(12,2), 
+            @Mode NVARCHAR(20), @RuleName NVARCHAR(100);
+
+    SET @RuleCursor = CURSOR FOR
+    SELECT RuleID, RuleName, CardGroupID, Amount, TopUpMode
+    FROM Subsidy_Rules
+    WHERE IsActive = 1
+      AND (LastRunDate IS NULL OR LastRunDate < @Today) -- ป้องกันรันซ้ำ
+      AND (
+          FrequencyType = 'DAILY' 
+          OR (FrequencyType = 'MONTHLY' AND ExecutionDay = @DayOfMonth)
+      );
+
+    OPEN @RuleCursor;
+    FETCH NEXT FROM @RuleCursor INTO @RuleID, @RuleName, @CardGroup, @Amt, @Mode;
+
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        BEGIN TRANSACTION
+        BEGIN TRY
+            -- 1. บันทึก Log ก่อนทำการเปลี่ยนแปลง (Bulk Insert Log)
+            INSERT INTO Txn_Subsidy_Log 
+            (CardUID, EmployeeID, Amount, PreviousBalance, NewBalance, TxnType, RuleID, PerformedBy, Remark)
+            SELECT 
+                C.CardUID, 
+                C.EmployeeID, 
+                @Amt, 
+                C.SubsidyBalance,
+                CASE 
+                    WHEN @Mode = 'RESET' THEN @Amt              -- ถ้า Reset ยอดใหม่คือ Amt เลย
+                    ELSE C.SubsidyBalance + @Amt                -- ถ้า Stack ยอดใหม่คือ เก่า+Amt
+                END,
+                'AUTO', 
+                @RuleID, 
+                'SYSTEM', 
+                'Auto Rule: ' + @RuleName
+            FROM Cards C
+            WHERE C.CardGroupID = @CardGroup 
+              AND C.Status = 'Active'; -- เฉพาะบัตรที่ยังใช้งานอยู่
+
+            -- 2. อัปเดตเงินในกระเป๋า (Bulk Update)
+            IF @Mode = 'RESET'
+            BEGIN
+                -- ล้างยอดเก่าทิ้ง แล้วใส่ยอดใหม่
+                UPDATE Cards
+                SET SubsidyBalance = @Amt
+                WHERE CardGroupID = @CardGroup AND Status = 'Active';
+            END
+            ELSE -- Mode 'STACK'
+            BEGIN
+                -- ทบยอด
+                UPDATE Cards
+                SET SubsidyBalance = SubsidyBalance + @Amt
+                WHERE CardGroupID = @CardGroup AND Status = 'Active';
+            END
+
+            -- 3. อัปเดตว่า Rule นี้รันแล้ว
+            UPDATE Subsidy_Rules SET LastRunDate = @Today WHERE RuleID = @RuleID;
+
+            COMMIT TRANSACTION
+        END TRY
+        BEGIN CATCH
+            ROLLBACK TRANSACTION;
+            -- บันทึก Error ลงตาราง ErrorLog ถ้ามี (ในที่นี้ขอข้าม)
+        END CATCH
+
+        FETCH NEXT FROM @RuleCursor INTO @RuleID, @RuleName, @CardGroup, @Amt, @Mode;
+    END
+
+    CLOSE @RuleCursor;
+    DEALLOCATE @RuleCursor;
+END
+3. ตัวอย่างการตั้งค่าใช้งาน (Usage Examples)
+สถานการณ์ 1: พนักงานทั่วไป (Staff) ได้เงินค่าข้าว 50 บาท/วัน (ตัดทิ้งถ้าไม่ใช้)
+SQL
+INSERT INTO Subsidy_Rules 
+(RuleName, CardGroupID, FrequencyType, Amount, TopUpMode)
+VALUES 
+('Staff Daily Allowance', 'STAFF', 'DAILY', 50.00, 'RESET');
+-- ผลลัพธ์: ทุกเช้า เงินใน Subsidy จะกลายเป็น 50 บาท (ไม่ว่าของเก่าเหลือเท่าไหร่)
+สถานการณ์ 2: ผู้บริหาร (Manager) ได้เงิน 3,000 บาท ทุกวันที่ 1 ของเดือน (สะสมได้)
+SQL
+INSERT INTO Subsidy_Rules 
+(RuleName, CardGroupID, FrequencyType, ExecutionDay, Amount, TopUpMode)
+VALUES 
+('Manager Monthly', 'MANAGER', 'MONTHLY', 1, 3000.00, 'STACK');
+-- ผลลัพธ์: ทุกวันที่ 1 เงินจะเพิ่มเข้าไป 3000 บาท ทบกับของเดิม
+สรุปข้อดีของ Design นี้
+ยืดหยุ่น: รองรับทั้งแบบ "ให้รายวันแล้วตัดทิ้ง" (ยอดนิยมในโรงงาน) และ "ให้รายเดือนสะสมได้"
+
+ตรวจสอบง่าย: แยกตาราง Txn_Subsidy_Log ทำให้เวลามีปัญหาว่า "ทำไมเงินหาย" หรือ "เงินมาจากไหน" เราเช็คได้ทันทีว่าเป็น Auto หรือ Manual
+
+High Performance: การใช้ Update ... From และ Insert ... Select ใน Stored Procedure แบบ Auto เป็นการทำ Batch Operation ซึ่งเร็วกว่าการวนลูปอัปเดตทีละใบมาก (รองรับพนักงานเป็นหมื่นคนได้สบายในไม่กี่วินาที)
+
+
+
+
+ปัญหานี้เกิดจาก Foreign Key Constraint ครับ แปลง่ายๆ คือ คุณกำลังพยายามสร้างกฎสวัสดิการให้กลุ่มบัตรที่ชื่อ 'STAFF' แต่ในตารางหลัก (Card_Groups) ยังไม่มีกลุ่มชื่อ 'STAFF' อยู่จริงครับ
+
+SQL Server จึงบล็อกไว้เพื่อป้องกันข้อมูลกำกวม (Data Integrity) ครับ
+
+วิธีแก้ไข
+คุณต้องสร้างกลุ่มบัตร 'STAFF' ในตาราง Card_Groups ก่อนครับ แล้วค่อยรันคำสั่ง Insert Rule
+
+รันคำสั่งชุดนี้ตามลำดับได้เลยครับ:
+
+SQL
+/* ขั้นตอนที่ 1: สร้างกลุ่มบัตร 'STAFF' ก่อน (ถ้ายังไม่มี) */
+IF NOT EXISTS (SELECT * FROM Card_Groups WHERE CardGroupID = 'STAFF')
+BEGIN
+    INSERT INTO Card_Groups (CardGroupID, GroupName, IsDefault)
+    VALUES ('STAFF', 'พนักงานประจำ', 0);
+END
+GO
+
+/* ขั้นตอนที่ 2: ค่อยสร้างกฎสวัสดิการ (รันคำสั่งเดิมของคุณใหม่) */
+INSERT INTO Subsidy_Rules 
+(RuleName, CardGroupID, FrequencyType, Amount, TopUpMode)
+VALUES 
+('Staff Daily Allowance', 'STAFF', 'DAILY', 50.00, 'RESET');
+GO
+คำอธิบายเพิ่มเติม: ใน Database ที่มีความสัมพันธ์กัน (Relational Database) ข้อมูลในตารางลูก (Subsidy_Rules) จะต้องอ้างอิงไปยังข้อมูลที่มีอยู่จริงในตารางแม่ (Card_Groups) เสมอครับ ถ้าไม่มีแม่ จะมีลูกไม่ได้ครับ

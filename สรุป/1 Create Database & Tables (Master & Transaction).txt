@@ -1,0 +1,91 @@
+CREATE DATABASE FCS_ModernDB COLLATE Thai_CI_AS;
+GO
+USE FCS_ModernDB;
+GO
+
+/* --- PART 1: MASTER DATA --- */
+CREATE TABLE Terminals (
+    TerminalID NVARCHAR(20) PRIMARY KEY, TerminalName NVARCHAR(100), TerminalType NVARCHAR(20),
+    MachineSerialNo NVARCHAR(50) NOT NULL, POS_Reg_No NVARCHAR(50), LocationCode NVARCHAR(20),
+    IsActive BIT DEFAULT 1, CreatedAt DATETIME DEFAULT GETDATE()
+);
+
+CREATE TABLE Vendors (
+    VendorID NVARCHAR(20) PRIMARY KEY, VendorName NVARCHAR(100) NOT NULL, OwnerName NVARCHAR(100),
+    TaxID NVARCHAR(20), BranchID NVARCHAR(10) DEFAULT '00000', IsVatRegistered BIT DEFAULT 0,
+    GP_Share_Percent DECIMAL(5, 2) DEFAULT 0.00, Rent_Price DECIMAL(12, 2) DEFAULT 0.00, IsActive BIT DEFAULT 1
+);
+
+CREATE TABLE Employees (
+    EmployeeID NVARCHAR(20) PRIMARY KEY, FullName NVARCHAR(150) NOT NULL, Department NVARCHAR(100),
+    Status NVARCHAR(20) DEFAULT 'Active', ExtraData NVARCHAR(MAX), UpdatedAt DATETIME DEFAULT GETDATE()
+);
+
+CREATE TABLE Card_Groups (
+    CardGroupID NVARCHAR(20) PRIMARY KEY, GroupName NVARCHAR(100), IsDefault BIT DEFAULT 0
+);
+
+CREATE TABLE Cards (
+    CardUID NVARCHAR(50) PRIMARY KEY, 
+    EmployeeID NVARCHAR(20) REFERENCES Employees(EmployeeID),
+    CardGroupID NVARCHAR(20) DEFAULT 'VISITOR' REFERENCES Card_Groups(CardGroupID),
+    CashBalance DECIMAL(12, 2) DEFAULT 0.00,       -- เงินเติมเอง (ถอนได้)
+    SubsidyBalance DECIMAL(12, 2) DEFAULT 0.00,    -- เงินสวัสดิการ (ถอนไม่ได้)
+    Status NVARCHAR(20) DEFAULT 'Active', ExpireDate DATE NULL,
+    PointBalance DECIMAL(12, 2) DEFAULT 0.00, PointExpDate DATE
+);
+
+CREATE TABLE Products (
+    ProductID NVARCHAR(20) PRIMARY KEY, VendorID NVARCHAR(20) REFERENCES Vendors(VendorID),
+    ProductName NVARCHAR(150) NOT NULL, BasePrice DECIMAL(12, 2) NOT NULL DEFAULT 0,
+    StockType NVARCHAR(20) DEFAULT 'STOCK', IsActive BIT DEFAULT 1
+);
+
+CREATE TABLE Product_Price_Tiers (
+    TierID BIGINT IDENTITY(1,1) PRIMARY KEY,
+    ProductID NVARCHAR(20) REFERENCES Products(ProductID),
+    CardGroupID NVARCHAR(20) REFERENCES Card_Groups(CardGroupID),
+    SpecialPrice DECIMAL(12, 2) NOT NULL,
+    CONSTRAINT UK_Product_Tier UNIQUE (ProductID, CardGroupID)
+);
+
+CREATE TABLE Ref_Payment_Types (
+    PaymentTypeID NVARCHAR(20) PRIMARY KEY, PaymentName NVARCHAR(50), NeedRefNo BIT DEFAULT 0
+);
+
+/* --- PART 2: TRANSACTIONS --- */
+CREATE TABLE System_Shifts (
+    ShiftID INT IDENTITY(1,1) PRIMARY KEY, ShiftDate DATE DEFAULT CAST(GETDATE() AS DATE),
+    TerminalID NVARCHAR(20) REFERENCES Terminals(TerminalID), OpenedBy NVARCHAR(50),
+    OpenedAt DATETIME DEFAULT GETDATE(), ClosedAt DATETIME NULL, Status NVARCHAR(20) DEFAULT 'Open'
+);
+
+CREATE TABLE Txn_Cashier (
+    TxnID BIGINT IDENTITY(1,1) PRIMARY KEY, TxnDate DATETIME DEFAULT GETDATE(),
+    ShiftID INT REFERENCES System_Shifts(ShiftID), TerminalID NVARCHAR(20) REFERENCES Terminals(TerminalID),
+    MachineSerialNo NVARCHAR(50), POS_Reg_No NVARCHAR(50), IssuerTaxID NVARCHAR(20), TaxInvoiceNo NVARCHAR(50), IsFullTax BIT DEFAULT 0,
+    CardUID NVARCHAR(50) REFERENCES Cards(CardUID), TxnType NVARCHAR(20) NOT NULL,
+    TotalAmount DECIMAL(12, 2) NOT NULL, CashierUserID NVARCHAR(50), Remark NVARCHAR(255)
+);
+
+CREATE TABLE Txn_Cashier_Payments (
+    PaymentID BIGINT IDENTITY(1,1) PRIMARY KEY, TxnID BIGINT REFERENCES Txn_Cashier(TxnID),
+    PaymentTypeID NVARCHAR(20) REFERENCES Ref_Payment_Types(PaymentTypeID),
+    Amount DECIMAL(12, 2) NOT NULL, RefNo NVARCHAR(100), RefData NVARCHAR(MAX)
+);
+
+CREATE TABLE Sales_Orders (
+    OrderID BIGINT IDENTITY(1,1) PRIMARY KEY, OrderNo NVARCHAR(30), OrderDate DATETIME DEFAULT GETDATE(),
+    ShiftID INT REFERENCES System_Shifts(ShiftID), TerminalID NVARCHAR(20) REFERENCES Terminals(TerminalID),
+    MachineSerialNo NVARCHAR(50), VendorID NVARCHAR(20) REFERENCES Vendors(VendorID),
+    IssuerTaxID NVARCHAR(20), TaxInvoiceNo NVARCHAR(50),
+    CardUID NVARCHAR(50) REFERENCES Cards(CardUID), TotalAmount DECIMAL(12, 2) NOT NULL,
+    VatAmount DECIMAL(12, 2) DEFAULT 0, CashUsed DECIMAL(12, 2) DEFAULT 0, SubsidyUsed DECIMAL(12, 2) DEFAULT 0,
+    Status NVARCHAR(20) DEFAULT 'Completed'
+);
+
+CREATE TABLE Sales_Order_Items (
+    ItemID BIGINT IDENTITY(1,1) PRIMARY KEY, OrderID BIGINT REFERENCES Sales_Orders(OrderID),
+    ProductID NVARCHAR(20) REFERENCES Products(ProductID), ProductName_Log NVARCHAR(150),
+    Quantity INT DEFAULT 1, UnitPrice DECIMAL(12, 2), TotalPrice AS (Quantity * UnitPrice) PERSISTED
+);

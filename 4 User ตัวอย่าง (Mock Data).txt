@@ -1,0 +1,252 @@
+สร้าง User ตัวอย่าง (Mock Data) ที่ครอบคลุมทุกบทบาทหน้าที่ (Roles) ทั้งแบบ Login ปกติ, แบบ AD, และแบบเจ้าของร้านค้าครับ
+
+คุณสามารถนำ Script นี้ไปรันต่อจาก Script สร้างตารางได้เลยครับ
+
+SQL
+/* =============================================
+   PART 8: MOCK DATA - USERS & ROLES
+   ข้อมูลตัวอย่างสำหรับทดสอบระบบ
+   ============================================= */
+
+-- 1. สร้าง Roles (บทบาท) ที่จำเป็น
+INSERT INTO App_Roles (RoleName, Description, IsSystemRole) VALUES 
+('SystemAdmin',    'ผู้ดูแลระบบสูงสุด', 1),
+('CanteenManager', 'ผู้จัดการศูนย์อาหาร', 0),
+('Cashier',        'พนักงานแคชเชียร์/จุดเติมเงิน', 0),
+('VendorOwner',    'เจ้าของร้านค้า (ดูยอดขายร้านตัวเอง)', 0);
+
+-- 2. สร้าง Vendor ตัวอย่าง (เพื่อให้ User ร้านค้ามี FK อ้างอิง)
+INSERT INTO Vendors (VendorID, VendorName, OwnerName) VALUES 
+('V-001', 'ข้าวมันไก่เจ๊จง', 'นางสาวจงใจ ดีมาก');
+
+-- 3. สร้าง Users (ผู้ใช้งาน)
+INSERT INTO App_Users (Username, IsADUser, PasswordHash, RelatedVendorID, IsActive) VALUES 
+-- User 1: Admin สูงสุด (Login แบบ Local)
+('admin', 0, 'hashed_password_123', NULL, 1), 
+
+-- User 2: ผู้จัดการ (Login ผ่าน Active Directory ของบริษัท)
+('somchai.m', 1, NULL, NULL, 1), 
+
+-- User 3: พนักงานแคชเชียร์ กะเช้า (Login แบบ Local)
+('cashier01', 0, 'hashed_password_456', NULL, 1),
+
+-- User 4: เจ้าของร้านข้าวมันไก่ (Login ดูยอดขายได้เฉพาะร้าน V-001)
+('vendor_v001', 0, 'hashed_password_789', 'V-001', 1);
+
+
+-- 4. จับคู่ User เข้ากับ Role (Mapping)
+-- หมายเหตุ: ID อาจเปลี่ยนแปลงตาม Identity ของเครื่อง ให้ใช้ Subquery เพื่อความชัวร์
+DECLARE @AdminRoleID INT = (SELECT RoleID FROM App_Roles WHERE RoleName = 'SystemAdmin');
+DECLARE @ManagerRoleID INT = (SELECT RoleID FROM App_Roles WHERE RoleName = 'CanteenManager');
+DECLARE @CashierRoleID INT = (SELECT RoleID FROM App_Roles WHERE RoleName = 'Cashier');
+DECLARE @VendorRoleID INT = (SELECT RoleID FROM App_Roles WHERE RoleName = 'VendorOwner');
+
+INSERT INTO App_User_Roles (UserID, RoleID) VALUES 
+((SELECT UserID FROM App_Users WHERE Username = 'admin'),       @AdminRoleID),
+((SELECT UserID FROM App_Users WHERE Username = 'somchai.m'),   @ManagerRoleID),
+((SELECT UserID FROM App_Users WHERE Username = 'cashier01'),   @CashierRoleID),
+((SELECT UserID FROM App_Users WHERE Username = 'vendor_v001'), @VendorRoleID);
+คำอธิบาย User แต่ละคน
+admin: เป็น Super User
+
+มีสิทธิ์ทุกอย่างในระบบ (ผ่าน Role SystemAdmin)
+
+ใช้ Password ภายในระบบ (Local)
+
+somchai.m: เป็น Manager
+
+IsADUser = 1 ระบบจะไม่เช็ค Password ใน Database แต่จะไปถาม Active Directory server แทน
+
+เหมาะสำหรับผู้บริหารในองค์กร
+
+cashier01: เป็น พนักงานหน้างาน
+
+มีสิทธิ์จำกัด (เช่น เติมเงินได้ แต่แก้ข้อมูลร้านค้าไม่ได้)
+
+vendor_v001: เป็น ร้านค้า
+
+มีฟิลด์ RelatedVendorID = 'V-001'
+
+สำคัญมาก: เวลาเขียนโปรแกรม Backend เมื่อ User นี้ Login เข้ามา ระบบต้อง Filter ข้อมูลยอดขายให้เห็น เฉพาะ ของร้าน V-001 เท่านั้น (Data Isolation) ครับ
+
+
+
+App_Role_Permissions ได้ใช้ไหม
+
+ใช่ครับ App_Role_Permissions ได้ใช้แน่นอนและสำคัญมากครับ
+
+ตารางนี้ทำหน้าที่เป็น "สะพาน" (Bridge Table) ในระบบรักษาความปลอดภัยแบบ RBAC (Role-Based Access Control) ครับ
+
+หน้าที่ของมันคือ
+จับคู่ว่า "บทบาทนี้ (Role)" ...ทำอะไรได้บ้าง... "(Permission)"
+
+ถ้าไม่มีตารางนี้:
+
+คุณจะต้องไป hardcode สิทธิ์ในโปรแกรม ซึ่งแก้ใขยาก
+
+หรือคุณต้องเอา Permission ไปยัดใส่ตาราง Role โดยตรง ซึ่งจะทำให้ 1 Role มีได้แค่ 1 สิทธิ์ (ซึ่งผิดหลักการ เพราะ 1 Role ควรทำได้หลายอย่าง)
+
+ความสัมพันธ์ใน Database (ER Diagram ย่อ)
+App_Roles (1) <----> (Many) App_Role_Permissions (Many) <----> (1) App_Permissions
+
+ตัวอย่างข้อมูลในตารางนี้
+สมมติ RoleID = 1 คือ Admin
+
+RoleID	PermissionCode	ความหมาย
+1	VENDOR_VIEW	Admin ดูร้านค้าได้
+1	VENDOR_ADD	Admin เพิ่มร้านค้าได้
+1	VENDOR_EDIT	Admin แก้ไขร้านค้าได้
+1	EMP_VIEW	Admin ดูพนักงานได้
+ตัวอย่าง SQL ที่ต้องใช้ตารางนี้
+เวลาคุณ Login เข้ามา ระบบจะวิ่ง Query นี้เพื่อ "กวาดสิทธิ์ทั้งหมด" ที่ User คนนั้นมีครับ:
+
+SQL
+SELECT P.PermissionCode
+FROM App_Users U
+JOIN App_User_Roles UR ON U.UserID = UR.UserID
+JOIN App_Roles R ON UR.RoleID = R.RoleID
+-- ตรงนี้ครับที่มันทำงาน: เชื่อม Role ไปหา Permission
+JOIN App_Role_Permissions RP ON R.RoleID = RP.RoleID 
+JOIN App_Permissions P ON RP.PermissionCode = P.PermissionCode
+WHERE U.Username = 'admin'; -- หรือ UserID ที่ Login เข้ามา
+สรุป: ห้ามตัดออกครับ ตารางนี้คือหัวใจของการกำหนดสิทธิ์เลยครับ
+
+ต้องใส่ข้อมูลไหม
+
+จำเป็นต้องใส่ครับ และเป็นขั้นตอนที่สำคัญที่สุดด้วยครับ
+
+ถ้าคุณสร้างแค่ Role (บทบาท) และ Permission (สิทธิ์) ไว้เฉยๆ แต่ไม่ใส่ข้อมูลลงใน App_Role_Permissions ผลที่ได้คือ "มีตำแหน่ง แต่ไม่มีอำนาจ" ครับ
+
+Role เปรียบเหมือน "ป้ายชื่อตำแหน่ง" (เช่น ผู้จัดการ)
+
+Permission เปรียบเหมือน "กุญแจห้องต่างๆ" (เช่น กุญแจตู้เซฟ, กุญแจคลังสินค้า)
+
+App_Role_Permissions คือการ "เอากุญแจใส่ห่วงให้พนักงานถือ"
+
+ถ้าไม่ใส่ข้อมูลตารางนี้ User ที่ Login เข้ามาจะ กดเมนูอะไรไม่ได้เลย หรือ ไม่เห็นเมนูอะไรเลย ครับ
+
+SQL Script สำหรับใส่ข้อมูลสิทธิ์ (Mapping)
+ผมเตรียม Script สำหรับจับคู่สิทธิ์ให้ Role ตัวอย่าง (Admin, Cashier, Vendor) ตามที่เราคุยกันไว้ครับ
+
+SQL
+/* =============================================
+   PART 9: MAPPING ROLE PERMISSIONS
+   จับคู่ว่า Role ไหน ทำอะไรได้บ้าง
+   ============================================= */
+
+-- 1. เตรียมตัวแปร ID ของ Role ต่างๆ (เพื่อความแม่นยำ ไม่ต้องเดาเลข ID)
+DECLARE @Role_Admin   INT = (SELECT RoleID FROM App_Roles WHERE RoleName = 'SystemAdmin');
+DECLARE @Role_Manager INT = (SELECT RoleID FROM App_Roles WHERE RoleName = 'CanteenManager');
+DECLARE @Role_Cashier INT = (SELECT RoleID FROM App_Roles WHERE RoleName = 'Cashier');
+DECLARE @Role_Vendor  INT = (SELECT RoleID FROM App_Roles WHERE RoleName = 'VendorOwner');
+
+-- 2. กำหนดสิทธิ์ให้ [SystemAdmin] -> "ทำได้ทุกอย่าง"
+-- วิธีลัด: Select สิทธิ์ทั้งหมดในตารางมาใส่ให้ Admin เลย
+INSERT INTO App_Role_Permissions (RoleID, PermissionCode)
+SELECT @Role_Admin, PermissionCode 
+FROM App_Permissions;
+
+
+-- 3. กำหนดสิทธิ์ให้ [Cashier] -> "เติมเงิน/ขายของ เท่านั้น"
+-- ห้ามแก้ข้อมูลร้านค้า ห้ามแก้พนักงาน
+INSERT INTO App_Role_Permissions (RoleID, PermissionCode) VALUES 
+(@Role_Cashier, 'POS_VIEW'),    -- เข้าเมนูเครื่องจุดขาย
+(@Role_Cashier, 'POS_ADD'),     -- เปิดเครื่อง/เปิดกะ
+(@Role_Cashier, 'CARD_VIEW'),   -- ตรวจสอบบัตรลูกค้า
+(@Role_Cashier, 'CARD_TOPUP'),  -- เติมเงิน (ถ้ามีสิทธิ์นี้)
+(@Role_Cashier, 'PROMO_VIEW');  -- ดูโปรโมชั่น (เพื่อแจ้งลูกค้า)
+
+
+-- 4. กำหนดสิทธิ์ให้ [VendorOwner] -> "ดูยอดขายร้านตัวเอง"
+-- ปกติร้านค้าจะไม่มายุ่งกับระบบหลังบ้านมากนัก นอกจากดู Report
+INSERT INTO App_Role_Permissions (RoleID, PermissionCode) VALUES 
+(@Role_Vendor, 'VENDOR_VIEW'),  -- ดูข้อมูลร้านตัวเอง
+(@Role_Vendor, 'PROMO_VIEW');   -- ดูโปรโมชั่นที่ร่วมรายการ
+
+
+-- 5. กำหนดสิทธิ์ให้ [CanteenManager] -> "ดูทุกอย่าง + จัดการข้อมูลพื้นฐาน"
+-- (สมมติให้ทำได้เกือบเท่า Admin แต่ห้ามเรื่องระบบ System)
+INSERT INTO App_Role_Permissions (RoleID, PermissionCode)
+SELECT @Role_Manager, PermissionCode 
+FROM App_Permissions
+WHERE PermissionCode NOT IN ('POS_EDIT', 'POS_ADD'); -- ยกเว้นเรื่องตั้งค่าเครื่อง POS ให้ IT ทำ
+ผลลัพธ์ที่จะเกิดขึ้น
+หลังจากรัน Script นี้แล้ว:
+
+User admin (Role: SystemAdmin)
+
+Login เข้ามา -> เห็นครบทุกเมนู (ร้านค้า, พนักงาน, บัตร, POS)
+
+ปุ่มทุกปุ่ม (เพิ่ม/ลบ/แก้ไข) กดได้หมด
+
+User cashier01 (Role: Cashier)
+
+Login เข้ามา -> เห็นเฉพาะเมนู "เครื่องแคชเชียร์" และ "ตรวจสอบบัตร"
+
+ถ้าพยายามเข้า URL /employees (พนักงาน) ระบบจะดีดออก (Access Denied) เพราะไม่มีสิทธิ์ EMP_VIEW
+
+นี่คือความสมบูรณ์ของระบบ RBAC ครับ ต้องมีครบ 3 ส่วน: User + Role + Permission Mapping ครับ
+
+
+ระบบ RBAC ครับ ต้องมีครบ 3 ส่วน: User + Role + Permission Mapping จะทำให้ระบบช้าไหม
+
+คำตอบคือ "ไม่ช้าครับ" หากมีการจัดการที่ถูกต้อง
+
+ในทางเทคนิค Database อย่าง SQL Server ถูกออกแบบมาให้จัดการการ Join ตารางแบบนี้ได้ในระดับ มิลลิวินาที (Milliseconds) ครับ ยิ่งข้อมูลในส่วนของ Role และ Permission ไม่ใช่ข้อมูลที่เยอะมหาศาล (ส่วนใหญ่หลักร้อยหรือหลักพันบรรทัด ไม่ใช่หลักล้านเหมือน Transaction ขาย) การดึงข้อมูลจึงเร็วมากครับ
+
+แต่เพื่อให้ระบบของคุณ "เร็วที่สุด" (High Performance) และรองรับ User จำนวนมากได้ ผมมีเทคนิคแนะนำ 3 ข้อดังนี้ครับ:
+
+1. สาเหตุที่ไม่ช้า เพราะ "Index" (Database Optimization)
+ใน Schema ที่ผมเขียนให้ก่อนหน้านี้:
+
+SQL
+CREATE TABLE App_Role_Permissions (
+    RoleID          INT NOT NULL REFERENCES App_Roles(RoleID),
+    PermissionCode  NVARCHAR(50) NOT NULL REFERENCES App_Permissions(PermissionCode),
+    PRIMARY KEY (RoleID, PermissionCode) -- <--- จุดสำคัญอยู่ตรงนี้ครับ
+);
+การกำหนด PRIMARY KEY (RoleID, PermissionCode) ทำให้ SQL Server สร้าง Clustered Index อัตโนมัติ แปลว่าเวลา Database ค้นหาสิทธิ์ของ Role นี้ มันไม่ต้องวิ่งหาทั้งตาราง แต่มันจะ "กระโดด" ไปที่ข้อมูลชุดนั้นทันที เหมือนเปิดสารบัญหนังสือครับ
+
+2. เทคนิค "Caching" (ไม่ต้อง Query บ่อย)
+ถึงแม้ Database จะเร็ว แต่ถ้าเรายิง Query ไปถาม Database ทุกครั้งที่กดปุ่ม (เช่น กด 10 ปุ่ม ถาม 10 รอบ) ก็อาจจะเกิด Traffic โดยไม่จำเป็น
+
+วิธีที่นิยมที่สุด (Best Practice): ให้โหลดสิทธิ์ทั้งหมด "ครั้งเดียวตอน Login" ครับ
+
+ตอน Login:
+
+User กรอก User/Pass
+
+ระบบเช็คถูกต้อง -> วิ่งไป Query DB (Join 3-4 ตารางที่เราคุยกัน) เพื่อกวาด Permission ทั้งหมดที่ User คนนี้มี
+
+นำ Permission ทั้งหมด ยัดใส่ในตัวแปร Session หรือ JWT Token (ฝั่ง API)
+
+ตอนใช้งาน (กดเมนู/กดปุ่ม):
+
+โปรแกรมไม่ต้องไปถาม Database แล้ว
+
+โปรแกรมเช็คจากตัวแปรใน Memory (Session/Token) ที่ถืออยู่ได้เลย ซึ่งใช้เวลาเกือบจะเป็น 0 วินาที
+
+3. ตัวอย่างการเก็บใน JWT (JSON Web Token)
+ถ้าคุณทำระบบเป็น API (Backend) เชื่อมกับ Frontend (React/Web) ผมแนะนำให้ใส่ Permission Code ลงไปใน Token เลยครับ
+
+หน้าตา Token (Payload) จะเป็นแบบนี้:
+
+JSON
+{
+  "sub": "user_123",
+  "name": "Somchai",
+  "role": "Manager",
+  "permissions": [
+     "VENDOR_VIEW",
+     "VENDOR_ADD",
+     "EMP_VIEW",
+     "POS_VIEW"
+  ],
+  "exp": 1712345678
+}
+ข้อดี: Backend แทบไม่ต้อง Query Database เรื่องสิทธิ์อีกเลย เพราะ Client ส่ง Token ที่มีสิทธิ์แนบมาให้ทุกครั้งที่เรียก API
+
+สรุป: โครงสร้าง 3 ส่วน (User-Role-Permission) เป็น Industry Standard (มาตรฐานอุตสาหกรรม) ที่ใช้กันทั่วโลก ทั้ง Google, Microsoft, AWS ใช้โมเดลนี้หมดครับ ดังนั้นมั่นใจได้เลยว่า ไม่ทำให้ระบบช้าแน่นอนครับ
+
+
+
