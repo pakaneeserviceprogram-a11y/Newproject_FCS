@@ -1,0 +1,275 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+// prisma/schema.prisma ๅ
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlserver"
+  url      = env("DATABASE_URL")  
+}
+
+// --- 1. Master Data ---
+
+model Terminal {
+  TerminalID      String        @id @db.NVarChar(20)
+  TerminalName    String?       @db.NVarChar(100)
+  TerminalType    String?       @db.NVarChar(20) // Cashier, Vendor, Kiosk
+  MachineSerialNo String        @db.NVarChar(50)
+  IsActive        Boolean?      @default(true)
+  SystemShifts    SystemShift[]
+  TxnCashier      TxnCashier[]
+  // 👇 เพิ่มบรรทัดนี้ลงไปครับ (เพื่อให้ Terminal รู้จัก SalesOrder)
+  SalesOrders     SalesOrder[]
+
+  @@map("Terminals")
+}
+
+model Vendor {
+  VendorID       String        @id @db.NVarChar(20)
+  VendorName     String        @db.NVarChar(100)
+  TaxID          String?       @db.NVarChar(20)
+  GPSharePercent Decimal?      @default(0) @db.Decimal(5, 2)
+  IsActive       Boolean?      @default(true)
+  Products       Product[]
+  SalesOrders    SalesOrder[]
+  AppUsers        AppUser[]
+  @@map("Vendors")
+}
+
+model Employee {
+  EmployeeID String  @id @db.NVarChar(20)
+  FullName   String? @db.NVarChar(150)
+  Status     String? @default("Active") @db.NVarChar(20)
+  Cards      Card[]
+
+  @@map("Employees")
+}
+
+model CardGroup {
+  CardGroupID       String             @id @db.NVarChar(20)
+  GroupName         String?            @db.NVarChar(100)
+  IsDefault         Boolean?           @default(false)
+  Cards             Card[]
+  ProductPriceTiers ProductPriceTier[]
+  SubsidyRules      SubsidyRule[]
+
+  @@map("Card_Groups")
+}
+
+model Card {
+  CardUID        String        @id @db.NVarChar(50)
+  EmployeeID     String?       @db.NVarChar(20)
+  CardGroupID    String?       @db.NVarChar(20)
+  CashBalance    Decimal?      @default(0) @db.Decimal(12, 2)
+  SubsidyBalance Decimal?      @default(0) @db.Decimal(12, 2)
+  PointBalance   Decimal?      @default(0) @db.Decimal(12, 2)
+  Status         String?       @default("Active") @db.NVarChar(20)
+  
+  // Relations
+  Employee       Employee?     @relation(fields: [EmployeeID], references: [EmployeeID])
+  CardGroup      CardGroup?    @relation(fields: [CardGroupID], references: [CardGroupID])
+  TxnCashier     TxnCashier[]
+  SalesOrders    SalesOrder[]
+
+  @@map("Cards")
+}
+
+model Product {
+  ProductID   String             @id @db.NVarChar(20)
+  VendorID    String?            @db.NVarChar(20)
+  ProductName String?            @db.NVarChar(150)
+  BasePrice   Decimal?           @default(0) @db.Decimal(12, 2)
+  Vendor      Vendor?            @relation(fields: [VendorID], references: [VendorID])
+  PriceTiers  ProductPriceTier[]
+  OrderItems  SalesOrderItem[]
+
+  @@map("Products")
+}
+
+model ProductPriceTier {
+  TierID       BigInt     @id @default(autoincrement())
+  ProductID    String?    @db.NVarChar(20)
+  CardGroupID  String?    @db.NVarChar(20)
+  SpecialPrice Decimal    @db.Decimal(12, 2)
+  Product      Product?   @relation(fields: [ProductID], references: [ProductID])
+  CardGroup    CardGroup? @relation(fields: [CardGroupID], references: [CardGroupID])
+
+  @@map("Product_Price_Tiers")
+}
+
+// --- 2. Transactions ---
+
+model SystemShift {
+  ShiftID    Int          @id @default(autoincrement())
+  TerminalID String?      @db.NVarChar(20)
+  OpenedBy   String?      @db.NVarChar(50)
+  OpenedAt   DateTime?    @default(now())
+  ClosedAt   DateTime?
+  Status     String?      @default("Open") @db.NVarChar(20)
+  Terminal   Terminal?    @relation(fields: [TerminalID], references: [TerminalID])
+  TxnCashier TxnCashier[]
+
+  @@map("System_Shifts")
+}
+
+model TxnCashier {
+  TxnID           BigInt              @id @default(autoincrement())
+  TxnDate         DateTime?           @default(now())
+  ShiftID         Int?
+  TerminalID      String?             @db.NVarChar(20)
+  TaxInvoiceNo    String?             @db.NVarChar(50)
+  MachineSerialNo String?             @db.NVarChar(50)
+  CardUID         String?             @db.NVarChar(50)
+  TxnType         String?             @db.NVarChar(20)
+  TotalAmount     Decimal?            @db.Decimal(12, 2)
+  
+  // เพิ่ม onDelete: NoAction, onUpdate: NoAction เพื่อแก้ Cycle
+  Shift           SystemShift?        @relation(fields: [ShiftID], references: [ShiftID], onDelete: NoAction, onUpdate: NoAction)
+  Terminal        Terminal?           @relation(fields: [TerminalID], references: [TerminalID], onDelete: NoAction, onUpdate: NoAction)
+  Card            Card?               @relation(fields: [CardUID], references: [CardUID], onDelete: NoAction, onUpdate: NoAction)
+  
+  Payments        TxnCashierPayment[]
+
+  @@map("Txn_Cashier")
+}
+
+model TxnCashierPayment {
+  PaymentID   BigInt      @id @default(autoincrement())
+  TxnID       BigInt?
+  PaymentType String?     @db.NVarChar(20) // CASH, QR
+  Amount      Decimal?    @db.Decimal(12, 2)
+  TxnCashier  TxnCashier? @relation(fields: [TxnID], references: [TxnID])
+
+  @@map("Txn_Cashier_Payments")
+}
+
+// --- แก้ไขตาราง SalesOrder ---
+model SalesOrder {
+  OrderID     BigInt    @id @default(autoincrement())
+  OrderNo     String?   @db.NVarChar(30)
+  OrderDate   DateTime? @default(now())
+  
+  // เพิ่มการระบุตัวตนและช่วงเวลา
+  VendorID    String?   @db.NVarChar(20)
+  TerminalID  String?   @db.NVarChar(20) // <--- เพิ่ม: ขายที่เครื่องไหน
+  ShiftID     Int?                       // <--- เพิ่ม: ขายในกะไหน (จะได้ปิดยอดถูก)
+  CardUID     String?   @db.NVarChar(50)
+  
+  TotalAmount Decimal?  @db.Decimal(12, 2)
+  CashUsed    Decimal?  @db.Decimal(12, 2)
+  SubsidyUsed Decimal?  @db.Decimal(12, 2)
+  
+  // เพิ่มสถานะบิล
+  OrderStatus String?   @default("COMPLETED") @db.NVarChar(20) // COMPLETED, VOID, CANCEL
+  CancelledAt DateTime? // <--- เพิ่ม: เวลายกเลิก (ถ้ามี)
+  CancelledBy String?   @db.NVarChar(50) // <--- เพิ่ม: ใครเป็นคนกดยกเลิก
+  
+  // Relations
+  Vendor      Vendor?          @relation(fields: [VendorID], references: [VendorID])
+  Terminal    Terminal?        @relation(fields: [TerminalID], references: [TerminalID]) // <--- Link ไป Terminal
+  // Shift       SystemShift?     @relation(fields: [ShiftID], references: [ShiftID]) // (Optional: ถ้าอยากผูก Shift ด้วย)
+  Card        Card?            @relation(fields: [CardUID], references: [CardUID])
+  Items       SalesOrderItem[]
+
+  @@map("Sales_Orders")
+}
+
+// --- แก้ไขตาราง SalesOrderItem ---
+model SalesOrderItem {
+  ItemID    BigInt      @id @default(autoincrement())
+  OrderID   BigInt?
+  ProductID String?     @db.NVarChar(20)
+  Quantity  Int?
+  UnitPrice Decimal?    @db.Decimal(12, 2)
+  
+  // เพิ่มหมายเหตุ (เช่น ไม่ใส่ผัก, พิเศษ)
+  Note      String?     @db.NVarChar(100) // <--- เพิ่ม
+  
+  Order     SalesOrder? @relation(fields: [OrderID], references: [OrderID], onDelete: NoAction, onUpdate: NoAction)
+  Product   Product?    @relation(fields: [ProductID], references: [ProductID], onDelete: NoAction, onUpdate: NoAction)
+
+  @@map("Sales_Order_Items")
+}
+
+// --- 3. Welfare Rules ---
+
+model SubsidyRule {
+  RuleID        Int        @id @default(autoincrement())
+  RuleName      String?    @db.NVarChar(100)
+  CardGroupID   String?    @db.NVarChar(20)
+  FrequencyType String?    @db.NVarChar(20)
+  Amount        Decimal?   @db.Decimal(12, 2)
+  TopUpMode     String?    @db.NVarChar(20)
+  LastRunDate   DateTime?  @db.Date
+  CardGroup     CardGroup? @relation(fields: [CardGroupID], references: [CardGroupID])
+  Logs          TxnSubsidyLog[]
+
+  @@map("Subsidy_Rules")
+}
+
+model TxnSubsidyLog {
+  LogID       BigInt       @id @default(autoincrement())
+  TxnDate     DateTime?    @default(now())
+  CardUID     String?      @db.NVarChar(50)
+  Amount      Decimal?     @db.Decimal(12, 2)
+  TxnType     String?      @db.NVarChar(20)
+  RuleID      Int?
+  Rule        SubsidyRule? @relation(fields: [RuleID], references: [RuleID])
+
+  @@map("Txn_Subsidy_Log")
+}
+
+// --- 4. Security & Access Control ---
+
+model AppRole {
+  RoleID          Int      @id @default(autoincrement())
+  RoleName        String   @unique @db.NVarChar(50) // เช่น 'ADMIN', 'CASHIER_SUPER'
+  Description     String?  @db.NVarChar(100)
+  Users           AppUser[]
+  Permissions     AppRolePermission[]
+
+  @@map("App_Roles")
+}
+
+model AppPermission {
+  PermissionCode  String   @id @db.NVarChar(50) // เช่น 'POS_VOID_BILL', 'REPORT_VIEW'
+  Description     String?  @db.NVarChar(100)
+  Roles           AppRolePermission[]
+
+  @@map("App_Permissions")
+}
+
+model AppRolePermission {
+  RoleID          Int
+  PermissionCode  String   @db.NVarChar(50)
+  
+  Role            AppRole        @relation(fields: [RoleID], references: [RoleID])
+  Permission      AppPermission  @relation(fields: [PermissionCode], references: [PermissionCode])
+
+  @@id([RoleID, PermissionCode]) // Composite Key
+  @@map("App_Role_Permissions")
+}
+
+model AppUser {
+  UserID          Int      @id @default(autoincrement())
+  Username        String   @unique @db.NVarChar(50)
+  PasswordHash    String   @db.NVarChar(255) // เก็บเป็น BCrypt Hash
+  FullName        String?  @db.NVarChar(100)
+  RoleID          Int
+  IsActive        Boolean  @default(true)
+  
+  // สำคัญ: ระบุว่า User นี้สังกัดร้านไหน (ถ้าเป็น NULL แปลว่าเป็นพนักงานส่วนกลาง/FCS)
+  VendorID        String?  @db.NVarChar(20) 
+
+  Role            AppRole  @relation(fields: [RoleID], references: [RoleID])
+  Vendor          Vendor?  @relation(fields: [VendorID], references: [VendorID])
+
+  @@map("App_Users")
+}
